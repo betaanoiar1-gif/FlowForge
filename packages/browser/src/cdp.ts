@@ -6,6 +6,7 @@ import type {
   BrowserTab,
   PageDiscovery,
   SemanticActionResult,
+  SemanticInputResult,
   SemanticElement,
   SemanticMatch,
   SemanticQuery,
@@ -388,6 +389,239 @@ export class CdpBrowserGateway implements BrowserGateway {
       beforeTitle,
       afterTitle,
       error: "Click dispatched, but no observable URL/title change occurred before timeout.",
+    };
+  }
+
+  async fill(query: SemanticQuery, value: string, timeoutMs = 5000): Promise<SemanticInputResult> {
+    const pages = this.requireContext().pages();
+
+    if (!pages.length) {
+      throw new Error("Chrome has no open pages.");
+    }
+
+    const page = pages[0];
+    const match = await this.resolve(query);
+
+    if (!match.matched) {
+      return {
+        action: "fill",
+        query,
+        matched: false,
+        verified: false,
+        beforeValue: "",
+        afterValue: "",
+        error: `Semantic target was not unique. Match count: ${match.count}`,
+      };
+    }
+
+    const serializedQuery = {
+      ...query,
+      name:
+        query.name instanceof RegExp
+          ? { source: query.name.source, flags: query.name.flags }
+          : query.name,
+      text:
+        query.text instanceof RegExp
+          ? { source: query.text.source, flags: query.text.flags }
+          : query.text,
+      href:
+        query.href instanceof RegExp
+          ? { source: query.href.source, flags: query.href.flags }
+          : query.href,
+    };
+
+    const beforeValue = await page.evaluate((input) => {
+      const clean = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\\s+/g, " ").trim();
+
+      const matches = (
+        current: string,
+        expected: string | { source: string; flags: string } | undefined,
+        exact: boolean,
+      ): boolean => {
+        if (expected === undefined) return true;
+        if (typeof expected === "object") {
+          return new RegExp(expected.source, expected.flags).test(current);
+        }
+        return exact
+          ? current === expected
+          : current.toLowerCase().includes(expected.toLowerCase());
+      };
+
+      const isVisible = (element: HTMLElement): boolean => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.opacity !== "0" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const inferRole = (element: HTMLElement): string | null => {
+        const explicitRole = element.getAttribute("role");
+        if (explicitRole) return explicitRole;
+        const tag = element.tagName.toLowerCase();
+        if (tag === "button") return "button";
+        if (tag === "a") return "link";
+        if (tag === "input" || tag === "textarea" || element.isContentEditable) return "textbox";
+        if (tag === "select") return "combobox";
+        return null;
+      };
+
+      const exact = input.exact ?? false;
+      const visibleOnly = input.visible ?? true;
+      const enabledOnly = input.enabled ?? true;
+      const found: HTMLElement[] = [];
+
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>(
+        ["button","a[href]","input","textarea","select","[role]","[aria-label]","[contenteditable='true']"].join(","),
+      ))) {
+        const visible = isVisible(element);
+        if (visibleOnly && !visible) continue;
+        const role = inferRole(element);
+        const text = clean(element.innerText);
+        const ariaLabel = clean(element.getAttribute("aria-label"));
+        const title = clean(element.getAttribute("title"));
+        const value =
+          element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+            ? clean(element.value)
+            : element.isContentEditable
+              ? clean(element.innerText)
+              : "";
+        const accessibleName = ariaLabel || text || value || title;
+        const href = element.getAttribute("href");
+        const disabled =
+          "disabled" in element &&
+          Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled);
+
+        if (input.role && role !== input.role) continue;
+        if (input.contenteditable !== undefined && element.isContentEditable !== input.contenteditable) continue;
+        if (!matches(accessibleName, input.name, exact)) continue;
+        if (!matches(text, input.text, exact)) continue;
+        if (!matches(href ?? "", input.href, exact)) continue;
+        if (enabledOnly && disabled) continue;
+        found.push(element);
+      }
+
+      if (found.length !== 1) return "";
+      const element = found[0];
+      return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+        ? element.value
+        : element.isContentEditable
+          ? element.innerText
+          : element.textContent ?? "";
+    }, serializedQuery);
+
+    await page.evaluate((input) => {
+      const clean = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\\s+/g, " ").trim();
+
+      const matches = (
+        current: string,
+        expected: string | { source: string; flags: string } | undefined,
+        exact: boolean,
+      ): boolean => {
+        if (expected === undefined) return true;
+        if (typeof expected === "object") return new RegExp(expected.source, expected.flags).test(current);
+        return exact
+          ? current === expected
+          : current.toLowerCase().includes(expected.toLowerCase());
+      };
+
+      const isVisible = (element: HTMLElement): boolean => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0" &&
+          rect.width > 0 && rect.height > 0;
+      };
+
+      const inferRole = (element: HTMLElement): string | null => {
+        const explicitRole = element.getAttribute("role");
+        if (explicitRole) return explicitRole;
+        const tag = element.tagName.toLowerCase();
+        if (tag === "button") return "button";
+        if (tag === "a") return "link";
+        if (tag === "input" || tag === "textarea" || element.isContentEditable) return "textbox";
+        if (tag === "select") return "combobox";
+        return null;
+      };
+
+      const exact = input.exact ?? false;
+      const visibleOnly = input.visible ?? true;
+      const enabledOnly = input.enabled ?? true;
+      const found: HTMLElement[] = [];
+
+      for (const element of Array.from(document.querySelectorAll<HTMLElement>(
+        ["button","a[href]","input","textarea","select","[role]","[aria-label]","[contenteditable='true']"].join(","),
+      ))) {
+        const visible = isVisible(element);
+        if (visibleOnly && !visible) continue;
+        const role = inferRole(element);
+        const text = clean(element.innerText);
+        const ariaLabel = clean(element.getAttribute("aria-label"));
+        const title = clean(element.getAttribute("title"));
+        const value =
+          element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? clean(element.value) :
+          element.isContentEditable ? clean(element.innerText) : "";
+        const accessibleName = ariaLabel || text || value || title;
+        const href = element.getAttribute("href");
+        const disabled =
+          "disabled" in element &&
+          Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled);
+
+        if (input.role && role !== input.role) continue;
+        if (input.contenteditable !== undefined && element.isContentEditable !== input.contenteditable) continue;
+        if (!matches(accessibleName, input.name, exact)) continue;
+        if (!matches(text, input.text, exact)) continue;
+        if (!matches(href ?? "", input.href, exact)) continue;
+        if (enabledOnly && disabled) continue;
+        found.push(element);
+      }
+
+      if (found.length !== 1) throw new Error(`Semantic target was not unique. Match count: ${found.length}`);
+      found[0].focus();
+    }, serializedQuery);
+
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Backspace");
+    if (value.length > 0) await page.keyboard.insertText(value);
+
+    const deadline = Date.now() + timeoutMs;
+    let afterValue = beforeValue;
+
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(100);
+      afterValue = await page.evaluate(() => {
+        const active = document.activeElement as HTMLElement | null;
+        if (!active) return "";
+        if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return active.value;
+        if (active.isContentEditable) return active.innerText;
+        return active.textContent ?? "";
+      });
+
+      if (afterValue === value) {
+        return {
+          action: "fill",
+          query,
+          matched: true,
+          verified: true,
+          beforeValue,
+          afterValue,
+        };
+      }
+    }
+
+    return {
+      action: "fill",
+      query,
+      matched: true,
+      verified: false,
+      beforeValue,
+      afterValue,
+      error: `Fill dispatched, but exact read-back verification failed before timeout. Expected length: ${value.length}, actual length: ${afterValue.length}`,
     };
   }
 
