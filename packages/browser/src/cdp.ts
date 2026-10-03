@@ -134,7 +134,7 @@ export class CdpBrowserGateway implements BrowserGateway {
         const tag = element.tagName.toLowerCase();
         if (tag === "button") return "button";
         if (tag === "a") return "link";
-        if (tag === "input" || tag === "textarea") return "textbox";
+        if (tag === "input" || tag === "textarea" || element.isContentEditable) return "textbox";
         if (tag === "select") return "combobox";
 
         return null;
@@ -180,6 +180,7 @@ export class CdpBrowserGateway implements BrowserGateway {
           href,
           inputType:
             element instanceof HTMLInputElement ? element.type : null,
+          contenteditable: element.isContentEditable,
           disabled,
           visible,
         });
@@ -200,6 +201,7 @@ export class CdpBrowserGateway implements BrowserGateway {
         query.text instanceof RegExp
           ? { source: query.text.source, flags: query.text.flags }
           : query.text,
+      contenteditable: query.contenteditable,
       href:
         query.href instanceof RegExp
           ? { source: query.href.source, flags: query.href.flags }
@@ -508,6 +510,7 @@ export class CdpBrowserGateway implements BrowserGateway {
             element instanceof HTMLInputElement
               ? element.type
               : null,
+          contenteditable: element.isContentEditable,
           disabled:
             "disabled" in element &&
             Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled),
