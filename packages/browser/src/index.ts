@@ -48,6 +48,18 @@ export interface SemanticMatch {
   element: SemanticElement | null;
 }
 
+export interface SemanticActionResult {
+  action: "click";
+  query: SemanticQuery;
+  matched: boolean;
+  verified: boolean;
+  beforeUrl: string;
+  afterUrl: string;
+  beforeTitle: string;
+  afterTitle: string;
+  error?: string;
+}
+
 export interface BrowserGateway {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -57,6 +69,7 @@ export interface BrowserGateway {
   screenshot(): Promise<Uint8Array>;
   discoverPage(): Promise<PageDiscovery>;
   resolve(query: SemanticQuery): Promise<SemanticMatch>;
+  click(query: SemanticQuery, timeoutMs?: number): Promise<SemanticActionResult>;
 }
 
 export { CdpBrowserGateway } from "./cdp.js";
