@@ -42,6 +42,25 @@ export interface SemanticQuery {
   enabled?: boolean;
 }
 
+export interface DomDiagnosticElement {
+  tagName: string;
+  role: string | null;
+  ariaLabel: string | null;
+  placeholder: string | null;
+  name: string | null;
+  type: string | null;
+  contenteditable: string | null;
+  value: string | null;
+  text: string;
+  parentText: string;
+  html: string;
+}
+
+export interface DomDiagnostics {
+  inputs: DomDiagnosticElement[];
+  buttons: DomDiagnosticElement[];
+}
+
 export interface SemanticMatch {
   matched: boolean;
   count: number;
@@ -68,6 +87,7 @@ export interface BrowserGateway {
   open(url: string): Promise<void>;
   screenshot(): Promise<Uint8Array>;
   discoverPage(): Promise<PageDiscovery>;
+  domDiagnostics(): Promise<DomDiagnostics>;
   resolve(query: SemanticQuery): Promise<SemanticMatch>;
   click(query: SemanticQuery, timeoutMs?: number): Promise<SemanticActionResult>;
 }
