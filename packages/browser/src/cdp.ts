@@ -5,6 +5,8 @@ import type {
   BrowserTab,
   PageDiscovery,
   SemanticElement,
+  SemanticMatch,
+  SemanticQuery,
 } from "./index.js";
 
 export interface CdpBrowserGatewayOptions {
@@ -70,6 +72,139 @@ export class CdpBrowserGateway implements BrowserGateway {
     }
 
     return pages[0].screenshot({ type: "png" });
+  }
+
+  async resolve(query: SemanticQuery): Promise<SemanticMatch> {
+    const pages = this.requireContext().pages();
+
+    if (!pages.length) {
+      throw new Error("Chrome has no open pages.");
+    }
+
+    const page = pages[0];
+
+    const result = await page.evaluate((input) => {
+      const clean = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\\s+/g, " ").trim();
+
+      const matches = (value: string, expected: string | { source: string; flags: string } | undefined, exact: boolean): boolean => {
+        if (expected === undefined) return true;
+
+        if (typeof expected === "object") {
+          return new RegExp(expected.source, expected.flags).test(value);
+        }
+
+        return exact ? value === expected : value.toLowerCase().includes(expected.toLowerCase());
+      };
+
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          [
+            "button",
+            "a[href]",
+            "input",
+            "textarea",
+            "select",
+            "[role]",
+            "[aria-label]",
+            "[contenteditable='true']",
+          ].join(","),
+        ),
+      );
+
+      const isVisible = (element: HTMLElement): boolean => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+
+        return (
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          style.opacity !== "0" &&
+          rect.width > 0 &&
+          rect.height > 0
+        );
+      };
+
+      const inferRole = (element: HTMLElement): string | null => {
+        const explicitRole = element.getAttribute("role");
+        if (explicitRole) return explicitRole;
+
+        const tag = element.tagName.toLowerCase();
+        if (tag === "button") return "button";
+        if (tag === "a") return "link";
+        if (tag === "input" || tag === "textarea") return "textbox";
+        if (tag === "select") return "combobox";
+
+        return null;
+      };
+
+      const exact = input.exact ?? false;
+      const visibleOnly = input.visible ?? true;
+      const enabledOnly = input.enabled ?? true;
+
+      const found: SemanticElement[] = [];
+
+      for (const element of candidates) {
+        const visible = isVisible(element);
+        if (visibleOnly && !visible) continue;
+
+        const tagName = element.tagName.toLowerCase();
+        const role = inferRole(element);
+        const text = clean(element.innerText);
+        const ariaLabel = clean(element.getAttribute("aria-label"));
+        const title = clean(element.getAttribute("title"));
+        const value =
+          element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+            ? clean(element.value)
+            : "";
+
+        const accessibleName = ariaLabel || text || value || title;
+        const href = element.getAttribute("href");
+        const disabled =
+          "disabled" in element &&
+          Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled);
+
+        if (input.role && role !== input.role) continue;
+        if (!matches(accessibleName, input.name, exact)) continue;
+        if (!matches(text, input.text, exact)) continue;
+        if (!matches(href ?? "", input.href, exact)) continue;
+        if (enabledOnly && disabled) continue;
+
+        found.push({
+          tagName,
+          role,
+          accessibleName,
+          text,
+          href,
+          inputType:
+            element instanceof HTMLInputElement ? element.type : null,
+          disabled,
+          visible,
+        });
+      }
+
+      return {
+        matched: found.length === 1,
+        count: found.length,
+        element: found.length === 1 ? found[0] : null,
+      };
+    }, {
+      ...query,
+      name:
+        query.name instanceof RegExp
+          ? { source: query.name.source, flags: query.name.flags }
+          : query.name,
+      text:
+        query.text instanceof RegExp
+          ? { source: query.text.source, flags: query.text.flags }
+          : query.text,
+      href:
+        query.href instanceof RegExp
+          ? { source: query.href.source, flags: query.href.flags }
+          : query.href,
+    });
+
+    return result;
   }
 
   async discoverPage(): Promise<PageDiscovery> {
