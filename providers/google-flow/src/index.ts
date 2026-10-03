@@ -45,7 +45,7 @@ export class GoogleFlowAdapter implements ProviderAdapter {
   async discoverGenerate(): Promise<Awaited<ReturnType<BrowserGateway["resolve"]>>> {
     return this.browser.resolve({
       role: "button",
-      name: /generate/i,
+      name: /construction begins/i,
       visible: true,
       enabled: true,
     });
