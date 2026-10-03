@@ -21,6 +21,7 @@ export interface SemanticElement {
   text: string;
   href: string | null;
   inputType: string | null;
+  contenteditable: boolean;
   disabled: boolean;
   visible: boolean;
 }
@@ -40,6 +41,7 @@ export interface SemanticQuery {
   exact?: boolean;
   visible?: boolean;
   enabled?: boolean;
+  contenteditable?: boolean;
 }
 
 export interface DomDiagnosticElement {
