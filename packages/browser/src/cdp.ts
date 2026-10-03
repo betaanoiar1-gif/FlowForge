@@ -2,6 +2,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import type {
   BrowserGateway,
   BrowserState,
+  DomDiagnostics,
   BrowserTab,
   PageDiscovery,
   SemanticActionResult,
@@ -378,6 +379,44 @@ export class CdpBrowserGateway implements BrowserGateway {
       afterTitle,
       error: "Click dispatched, but no observable URL/title change occurred before timeout.",
     };
+  }
+
+  async domDiagnostics(): Promise<DomDiagnostics> {
+    const pages = this.requireContext().pages();
+
+    if (!pages.length) {
+      throw new Error("Chrome has no open pages.");
+    }
+
+    return pages[0].evaluate(() => {
+      const clean = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\\s+/g, " ").trim().slice(0, 500);
+
+      const describe = (element: Element) => {
+        const html = element.outerHTML.slice(0, 1200);
+        const parent = element.parentElement;
+        return {
+          tagName: element.tagName.toLowerCase(),
+          role: element.getAttribute("role"),
+          ariaLabel: element.getAttribute("aria-label"),
+          placeholder: element.getAttribute("placeholder"),
+          name: element.getAttribute("name"),
+          type: element.getAttribute("type"),
+          contenteditable: element.getAttribute("contenteditable"),
+          value: element instanceof HTMLInputElement ? element.value : null,
+          text: clean(element.textContent),
+          parentText: clean(parent?.innerText),
+          html,
+        };
+      };
+
+      return {
+        inputs: Array.from(
+          document.querySelectorAll("input, textarea, [contenteditable='true']")
+        ).map(describe),
+        buttons: Array.from(document.querySelectorAll("button")).map(describe),
+      };
+    });
   }
 
   async discoverPage(): Promise<PageDiscovery> {
