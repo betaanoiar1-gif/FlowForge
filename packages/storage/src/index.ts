@@ -23,6 +23,13 @@ export class SqliteJobRepository {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+
+
+      CREATE TABLE IF NOT EXISTS queue_entries (
+        job_id TEXT PRIMARY KEY,
+        enqueued_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
+      );
     `);
   }
 
@@ -88,9 +95,89 @@ export class SqliteJobRepository {
     return job;
   }
 
+
+  enqueue(jobId: string): QueueEntry {
+    const job = this.get(jobId);
+
+    if (!job) {
+      throw new Error(`Cannot enqueue unknown job: ${jobId}`);
+    }
+
+    if (job.status !== "CREATED" && job.status !== "FAILED") {
+      throw new Error(
+        `Cannot enqueue job ${jobId} from status ${job.status}`,
+      );
+    }
+
+    const enqueuedAt = new Date().toISOString();
+
+    this.db.prepare(`
+      INSERT INTO queue_entries (job_id, enqueued_at)
+      VALUES (?, ?)
+      ON CONFLICT(job_id) DO UPDATE SET
+        enqueued_at = excluded.enqueued_at
+    `).run(jobId, enqueuedAt);
+
+    return {
+      jobId,
+      enqueuedAt,
+    };
+  }
+
+  dequeue(): QueueEntry | null {
+    const row = this.db.prepare(`
+      SELECT job_id, enqueued_at
+      FROM queue_entries
+      ORDER BY enqueued_at ASC, rowid ASC
+      LIMIT 1
+    `).get() as QueueRow | undefined;
+
+    if (!row) return null;
+
+    this.db.prepare(`
+      DELETE FROM queue_entries
+      WHERE job_id = ?
+    `).run(row.job_id);
+
+    return {
+      jobId: row.job_id,
+      enqueuedAt: row.enqueued_at,
+    };
+  }
+
+  hasQueueEntry(jobId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      FROM queue_entries
+      WHERE job_id = ?
+      LIMIT 1
+    `).get(jobId) as { present: number } | undefined;
+
+    return row?.present === 1;
+  }
+
+  queueSize(): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM queue_entries
+    `).get() as { count: number };
+
+    return row.count;
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+export interface QueueEntry {
+  jobId: string;
+  enqueuedAt: string;
+}
+
+interface QueueRow {
+  job_id: string;
+  enqueued_at: string;
 }
 
 interface JobRow {
