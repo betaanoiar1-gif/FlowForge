@@ -16,12 +16,34 @@ async function main(): Promise<void> {
   console.log("[FlowForge] Page discovery:");
   console.log(JSON.stringify(discovery, null, 2));
 
+  const targets = [
+    {
+      id: "new_project",
+      query: { role: "button", name: /new project/i },
+    },
+    {
+      id: "project_opening",
+      query: { role: "link", name: "Project opening", exact: true },
+    },
+    {
+      id: "account_details",
+      query: { role: "button", name: "Account details", exact: true },
+    },
+  ] as const;
+
+  console.log("[FlowForge] Semantic resolver checks:");
+
+  for (const target of targets) {
+    const result = await gateway.resolve(target.query);
+    console.log(JSON.stringify({ id: target.id, ...result }, null, 2));
+  }
+
   await gateway.disconnect();
 
-  console.log("[FlowForge] CDP discovery test completed.");
+  console.log("[FlowForge] CDP semantic resolver test completed.");
 }
 
 main().catch((error: unknown) => {
-  console.error("[FlowForge] CDP discovery test failed:", error);
+  console.error("[FlowForge] CDP semantic resolver test failed:", error);
   process.exitCode = 1;
 });
