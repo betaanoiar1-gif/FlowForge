@@ -42,6 +42,15 @@ export class GoogleFlowAdapter implements ProviderAdapter {
     await this.preparePrompt("");
   }
 
+  async discoverGenerate(): Promise<Awaited<ReturnType<BrowserGateway["resolve"]>>> {
+    return this.browser.resolve({
+      role: "button",
+      name: /generate/i,
+      visible: true,
+      enabled: true,
+    });
+  }
+
   async submit(_request: GenerationRequest): Promise<{ externalId?: string }> {
     throw new Error(
       "Google Flow submission is intentionally not implemented until the CDP browser gateway is validated."
