@@ -23,13 +23,6 @@ async function main(): Promise<void> {
   console.log("[FlowForge] ALL semantic elements:");
   console.log(JSON.stringify(discovery.elements, null, 2));
 
-  console.log("[FlowForge] Workspace diagnostics:");
-
-  const page = (gateway as CdpBrowserGateway);
-  const diagnostics = await page.inspectWorkspaceSemantics();
-
-  console.log(JSON.stringify(diagnostics, null, 2));
-
   await gateway.disconnect();
 
   console.log("[FlowForge] Read-only workspace diagnostics completed.");
