@@ -1,0 +1,13 @@
+{
+  "name": "@flowforge/provider-google-flow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@flowforge/core": "workspace:*",
+    "@flowforge/browser": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
