@@ -4,6 +4,7 @@ import type {
   BrowserState,
   BrowserTab,
   PageDiscovery,
+  SemanticActionResult,
   SemanticElement,
   SemanticMatch,
   SemanticQuery,
