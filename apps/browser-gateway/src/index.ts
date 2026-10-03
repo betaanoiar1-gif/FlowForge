@@ -25,6 +25,7 @@ async function main(): Promise<void> {
 
   const interestingQueries = [
     { id: "textboxes", query: { role: "textbox" } },
+    { id: "flow_prompt_editor", query: { role: "textbox", contenteditable: true } },
     { id: "settings", query: { role: "button", name: "Settings trigger", exact: true } },
     { id: "ingredients", query: { role: "button", name: "Add ingredients to the order box", exact: true } },
     { id: "generate", query: { role: "button", name: "Construction begins", exact: true } },
