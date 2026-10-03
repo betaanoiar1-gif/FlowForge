@@ -13,46 +13,38 @@ async function main(): Promise<void> {
 
   const discovery = await gateway.discoverPage();
 
-  console.log("[FlowForge] Page discovery:");
-  console.log(JSON.stringify(discovery, null, 2));
+  console.log("[FlowForge] Current page:");
+  console.log(JSON.stringify({
+    url: discovery.url,
+    title: discovery.title,
+    readyState: discovery.readyState,
+  }, null, 2));
 
-  const projectQuery = {
-    role: "link",
-    name: "Project opening",
-    exact: true,
-  } as const;
+  console.log("[FlowForge] Semantic controls discovered:");
 
-  const resolved = await gateway.resolve(projectQuery);
+  const interesting = discovery.elements.filter((element) => {
+    const value = [
+      element.role ?? "",
+      element.accessibleName,
+      element.text,
+      element.href ?? "",
+      element.inputType ?? "",
+    ].join(" ").toLowerCase();
 
-  console.log("[FlowForge] Project target:");
-  console.log(JSON.stringify(resolved, null, 2));
+    return /prompt|generate|video|image|upload|reference|ingredient|frame|agent|model|download|scene|character|asset|create|submit/.test(value);
+  });
 
-  if (!resolved.matched) {
-    throw new Error(
-      `Project opening is not uniquely resolvable. Match count: ${resolved.count}`,
-    );
-  }
+  console.log(JSON.stringify(interesting, null, 2));
 
-  console.log("[FlowForge] Executing semantic click: Project opening");
+  console.log("[FlowForge] Total semantic elements:", discovery.elements.length);
+  console.log("[FlowForge] Matching workspace candidates:", interesting.length);
 
-  const action = await gateway.click(projectQuery);
-
-  console.log("[FlowForge] Click result:");
-  console.log(JSON.stringify(action, null, 2));
-
-  if (!action.verified) {
-    throw new Error(
-      action.error ?? "Semantic click verification failed.",
-    );
-  }
-
-  console.log("[FlowForge] Semantic click verified.");
   await gateway.disconnect();
 
-  console.log("[FlowForge] Action + verification test completed.");
+  console.log("[FlowForge] Read-only workspace discovery completed.");
 }
 
 main().catch((error: unknown) => {
-  console.error("[FlowForge] Action + verification test failed:", error);
+  console.error("[FlowForge] Workspace discovery failed:", error);
   process.exitCode = 1;
 });
