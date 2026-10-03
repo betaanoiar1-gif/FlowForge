@@ -1,5 +1,4 @@
 import { CdpBrowserGateway } from "@flowforge/browser";
-import { chromium } from "playwright-core";
 
 const endpoint = process.env.FLOWFORGE_CDP_ENDPOINT ?? "http://127.0.0.1:9222";
 
@@ -40,51 +39,13 @@ async function main(): Promise<void> {
 
   console.log("[FlowForge] Read-only DOM diagnostics:");
 
-  const diagnostics = await discoveryDiagnostics();
+  const diagnostics = await gateway.domDiagnostics();
 
   console.log(JSON.stringify(diagnostics, null, 2));
 
   await gateway.disconnect();
 
   console.log("[FlowForge] Read-only workspace diagnostics completed.");
-}
-
-async function discoveryDiagnostics(): Promise<unknown> {
-  const browser = await chromium.connectOverCDP(endpoint);
-  const context = browser.contexts()[0];
-  const page = context.pages()[0];
-
-  const result = await page.evaluate(() => {
-    const clean = (value: string | null | undefined): string =>
-      (value ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
-
-    const describe = (element: Element) => {
-      const html = element.outerHTML.slice(0, 1200);
-      const parent = element.parentElement;
-      const parentText = clean(parent?.innerText);
-      return {
-        tagName: element.tagName.toLowerCase(),
-        role: element.getAttribute("role"),
-        ariaLabel: element.getAttribute("aria-label"),
-        placeholder: element.getAttribute("placeholder"),
-        name: element.getAttribute("name"),
-        type: element.getAttribute("type"),
-        contenteditable: element.getAttribute("contenteditable"),
-        value: element instanceof HTMLInputElement ? element.value : null,
-        text: clean(element.textContent),
-        parentText,
-        html,
-      };
-    };
-
-    return {
-      inputs: Array.from(document.querySelectorAll("input, textarea, [contenteditable='true']")).map(describe),
-      buttons: Array.from(document.querySelectorAll("button")).map(describe),
-    };
-  });
-
-  await browser.close();
-  return result;
 }
 
 main().catch((error: unknown) => {
