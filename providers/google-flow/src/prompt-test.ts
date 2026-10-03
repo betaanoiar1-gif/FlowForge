@@ -23,13 +23,26 @@ async function main(): Promise<void> {
     await adapter.clearPrompt();
     console.log("[FlowForge] Prompt cleared and verified.");
 
-    console.log("[FlowForge] Safe Google Flow prompt test passed.");
+    const generate = await adapter.discoverGenerate();
+
+    console.log("[FlowForge] Generate discovery:");
+    console.log(JSON.stringify(generate, null, 2));
+
+    if (!generate.matched) {
+      throw new Error(
+        `Generate control was not uniquely discovered. Match count: ${generate.count}`,
+      );
+    }
+
+    console.log("[FlowForge] Generate control discovered semantically.");
+    console.log("[FlowForge] No Generate action was dispatched.");
+    console.log("[FlowForge] Safe Google Flow discovery test passed.");
   } finally {
     await adapter.disconnect();
   }
 }
 
 main().catch((error: unknown) => {
-  console.error("[FlowForge] Safe Google Flow prompt test failed:", error);
+  console.error("[FlowForge] Safe Google Flow discovery test failed:", error);
   process.exitCode = 1;
 });
