@@ -16,34 +16,43 @@ async function main(): Promise<void> {
   console.log("[FlowForge] Page discovery:");
   console.log(JSON.stringify(discovery, null, 2));
 
-  const targets = [
-    {
-      id: "new_project",
-      query: { role: "button", name: /new project/i },
-    },
-    {
-      id: "project_opening",
-      query: { role: "link", name: "Project opening", exact: true },
-    },
-    {
-      id: "account_details",
-      query: { role: "button", name: "Account details", exact: true },
-    },
-  ] as const;
+  const projectQuery = {
+    role: "link",
+    name: "Project opening",
+    exact: true,
+  } as const;
 
-  console.log("[FlowForge] Semantic resolver checks:");
+  const resolved = await gateway.resolve(projectQuery);
 
-  for (const target of targets) {
-    const result = await gateway.resolve(target.query);
-    console.log(JSON.stringify({ id: target.id, ...result }, null, 2));
+  console.log("[FlowForge] Project target:");
+  console.log(JSON.stringify(resolved, null, 2));
+
+  if (!resolved.matched) {
+    throw new Error(
+      `Project opening is not uniquely resolvable. Match count: ${resolved.count}`,
+    );
   }
 
+  console.log("[FlowForge] Executing semantic click: Project opening");
+
+  const action = await gateway.click(projectQuery);
+
+  console.log("[FlowForge] Click result:");
+  console.log(JSON.stringify(action, null, 2));
+
+  if (!action.verified) {
+    throw new Error(
+      action.error ?? "Semantic click verification failed.",
+    );
+  }
+
+  console.log("[FlowForge] Semantic click verified.");
   await gateway.disconnect();
 
-  console.log("[FlowForge] CDP semantic resolver test completed.");
+  console.log("[FlowForge] Action + verification test completed.");
 }
 
 main().catch((error: unknown) => {
-  console.error("[FlowForge] CDP semantic resolver test failed:", error);
+  console.error("[FlowForge] Action + verification test failed:", error);
   process.exitCode = 1;
 });
