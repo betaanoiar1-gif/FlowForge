@@ -20,28 +20,19 @@ async function main(): Promise<void> {
     readyState: discovery.readyState,
   }, null, 2));
 
-  console.log("[FlowForge] Semantic controls discovered:");
+  console.log("[FlowForge] ALL semantic elements:");
+  console.log(JSON.stringify(discovery.elements, null, 2));
 
-  const interesting = discovery.elements.filter((element) => {
-    const value = [
-      element.role ?? "",
-      element.accessibleName,
-      element.text,
-      element.href ?? "",
-      element.inputType ?? "",
-    ].join(" ").toLowerCase();
+  console.log("[FlowForge] Workspace diagnostics:");
 
-    return /prompt|generate|video|image|upload|reference|ingredient|frame|agent|model|download|scene|character|asset|create|submit/.test(value);
-  });
+  const page = (gateway as CdpBrowserGateway);
+  const diagnostics = await page.inspectWorkspaceSemantics();
 
-  console.log(JSON.stringify(interesting, null, 2));
-
-  console.log("[FlowForge] Total semantic elements:", discovery.elements.length);
-  console.log("[FlowForge] Matching workspace candidates:", interesting.length);
+  console.log(JSON.stringify(diagnostics, null, 2));
 
   await gateway.disconnect();
 
-  console.log("[FlowForge] Read-only workspace discovery completed.");
+  console.log("[FlowForge] Read-only workspace diagnostics completed.");
 }
 
 main().catch((error: unknown) => {
