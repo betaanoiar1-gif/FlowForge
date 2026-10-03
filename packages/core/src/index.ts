@@ -38,3 +38,55 @@ export interface ProviderAdapter {
   download(result: GenerationResult): Promise<string[]>;
   disconnect(): Promise<void>;
 }
+
+
+export type JobEvent = {
+  from: JobStatus;
+  to: JobStatus;
+  at: string;
+  error?: string;
+};
+
+export interface GenerationJob {
+  id: Id;
+  request: GenerationRequest;
+  status: JobStatus;
+  externalId?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
+  CREATED: ["PREPARING", "CANCELLED"],
+  PREPARING: ["SUBMITTING", "FAILED", "CANCELLED"],
+  SUBMITTING: ["GENERATING", "FAILED", "CANCELLED"],
+  GENERATING: ["VERIFYING", "FAILED", "CANCELLED"],
+  VERIFYING: ["DOWNLOADING", "FAILED", "CANCELLED"],
+  DOWNLOADING: ["VALIDATING", "FAILED", "CANCELLED"],
+  VALIDATING: ["COMPLETED", "FAILED"],
+  COMPLETED: [],
+  FAILED: ["PREPARING", "CANCELLED"],
+  CANCELLED: [],
+};
+
+export function canTransition(from: JobStatus, to: JobStatus): boolean {
+  return JOB_TRANSITIONS[from].includes(to);
+}
+
+export function assertTransition(from: JobStatus, to: JobStatus): void {
+  if (!canTransition(from, to)) {
+    throw new Error(`Invalid job transition: ${from} -> ${to}`);
+  }
+}
+
+export function transitionJob(job: GenerationJob, to: JobStatus, error?: string): GenerationJob {
+  assertTransition(job.status, to);
+  const now = new Date().toISOString();
+  return {
+    ...job,
+    status: to,
+    error: to === "FAILED" ? error ?? job.error : undefined,
+    updatedAt: now,
+  };
+}
