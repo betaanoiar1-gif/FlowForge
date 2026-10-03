@@ -1,13 +1,1 @@
-{
-  "name": "@flowforge/provider-google-flow",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "dependencies": {
-    "@flowforge/core": "workspace:*",
-    "@flowforge/browser": "workspace:*"
-  },
-  "exports": {
-    ".": "./src/index.ts"
-  }
-}
+{"name":"@flowforge/provider-google-flow","private":true,"version":"0.1.0","type":"module","dependencies":{"@flowforge/core":"workspace:*","@flowforge/browser":"workspace:*"},"exports":{".":"./dist/index.js"},"scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test:prompt":"node dist/prompt-test.js"},"devDependencies":{"@types/node":"^26.6.4","typescript":"^5.9.0"}}
