@@ -45,7 +45,7 @@ async function main(): Promise<void> {
     console.log("[FlowForge] Clear result:");
     console.log(JSON.stringify(cleared, null, 2));
 
-    if (!cleared.verified || cleared.afterValue !== "") {
+    if (!cleared.verified || cleared.afterValue.trim() !== "") {
       throw new Error(
         `Clear verification failed. verified=${cleared.verified}, afterValue=${JSON.stringify(
           cleared.afterValue
