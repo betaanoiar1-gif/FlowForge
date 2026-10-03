@@ -602,7 +602,9 @@ export class CdpBrowserGateway implements BrowserGateway {
         return active.textContent ?? "";
       });
 
-      if (afterValue === value) {
+      const verifiedValue = afterValue.trim();
+
+      if (afterValue === value || (value === "" && verifiedValue === "")) {
         return {
           action: "fill",
           query,
@@ -621,7 +623,7 @@ export class CdpBrowserGateway implements BrowserGateway {
       verified: false,
       beforeValue,
       afterValue,
-      error: `Fill dispatched, but exact read-back verification failed before timeout. Expected length: ${value.length}, actual length: ${afterValue.length}`,
+      error: `Fill dispatched, but read-back verification failed before timeout. Expected length: ${value.length}, actual length: ${afterValue.length}`,
     };
   }
 
