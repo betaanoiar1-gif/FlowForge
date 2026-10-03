@@ -481,6 +481,7 @@ export class CdpBrowserGateway implements BrowserGateway {
         if (tag === "a") return "link";
         if (tag === "input") return "textbox";
         if (tag === "textarea") return "textbox";
+        if (element.isContentEditable) return "textbox";
         if (tag === "select") return "combobox";
 
         return null;
