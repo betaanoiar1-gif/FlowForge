@@ -81,6 +81,16 @@ export interface SemanticActionResult {
   error?: string;
 }
 
+export interface SemanticInputResult {
+  action: "fill";
+  query: SemanticQuery;
+  matched: boolean;
+  verified: boolean;
+  beforeValue: string;
+  afterValue: string;
+  error?: string;
+}
+
 export interface BrowserGateway {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -92,6 +102,7 @@ export interface BrowserGateway {
   domDiagnostics(): Promise<DomDiagnostics>;
   resolve(query: SemanticQuery): Promise<SemanticMatch>;
   click(query: SemanticQuery, timeoutMs?: number): Promise<SemanticActionResult>;
+  fill(query: SemanticQuery, value: string, timeoutMs?: number): Promise<SemanticInputResult>;
 }
 
 export { CdpBrowserGateway } from "./cdp.js";
