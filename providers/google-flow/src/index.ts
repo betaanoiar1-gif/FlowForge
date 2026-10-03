@@ -22,6 +22,26 @@ export class GoogleFlowAdapter implements ProviderAdapter {
     };
   }
 
+  async preparePrompt(prompt: string): Promise<void> {
+    const query = {
+      role: "textbox",
+      contenteditable: true,
+    } as const;
+
+    const result = await this.browser.fill(query, prompt);
+
+    if (!result.matched || !result.verified) {
+      throw new Error(
+        result.error ??
+          "Google Flow prompt editor was not uniquely resolved or verified."
+      );
+    }
+  }
+
+  async clearPrompt(): Promise<void> {
+    await this.preparePrompt("");
+  }
+
   async submit(_request: GenerationRequest): Promise<{ externalId?: string }> {
     throw new Error(
       "Google Flow submission is intentionally not implemented until the CDP browser gateway is validated."
