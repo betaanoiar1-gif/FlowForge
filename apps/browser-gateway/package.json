@@ -1,0 +1,1 @@
+{"name":"@flowforge/browser-gateway-app","private":true,"version":"0.1.0","type":"module","scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","start":"node dist/index.js"},"dependencies":{"@flowforge/browser":"workspace:*"},"devDependencies":{"typescript":"^5.9.0"}}
