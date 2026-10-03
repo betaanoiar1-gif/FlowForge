@@ -1,4 +1,4 @@
-import type { BrowserGateway } from "@flowforge/browser";
+import type { BrowserGateway, SemanticActionResult } from "@flowforge/browser";
 import type {
   GenerationRequest,
   GenerationResult,
@@ -42,13 +42,36 @@ export class GoogleFlowAdapter implements ProviderAdapter {
     await this.preparePrompt("");
   }
 
-  async discoverGenerate(): Promise<Awaited<ReturnType<BrowserGateway["resolve"]>>> {
-    return this.browser.resolve({
+  private generateQuery() {
+    return {
       role: "button",
       name: /construction begins/i,
       visible: true,
       enabled: true,
-    });
+    } as const;
+  }
+
+  async discoverGenerate(): Promise<Awaited<ReturnType<BrowserGateway["resolve"]>>> {
+    return this.browser.resolve(this.generateQuery());
+  }
+
+  async clickGenerate(timeoutMs = 2000): Promise<SemanticActionResult> {
+    const query = this.generateQuery();
+    const result = await this.browser.click(query, timeoutMs);
+
+    if (result.verified) return result;
+
+    const after = await this.browser.resolve(query);
+
+    if (!after.matched) {
+      return {
+        ...result,
+        verified: true,
+        error: undefined,
+      };
+    }
+
+    return result;
   }
 
   async submit(_request: GenerationRequest): Promise<{ externalId?: string }> {
