@@ -167,6 +167,10 @@ export class CdpBrowserGateway implements BrowserGateway {
           Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled);
 
         if (input.role && role !== input.role) continue;
+        if (
+          input.contenteditable !== undefined &&
+          element.isContentEditable !== input.contenteditable
+        ) continue;
         if (!matches(accessibleName, input.name, exact)) continue;
         if (!matches(text, input.text, exact)) continue;
         if (!matches(href ?? "", input.href, exact)) continue;
@@ -290,7 +294,7 @@ export class CdpBrowserGateway implements BrowserGateway {
         const tag = element.tagName.toLowerCase();
         if (tag === "button") return "button";
         if (tag === "a") return "link";
-        if (tag === "input" || tag === "textarea") return "textbox";
+        if (tag === "input" || tag === "textarea" || element.isContentEditable) return "textbox";
         if (tag === "select") return "combobox";
         return null;
       };
@@ -332,6 +336,10 @@ export class CdpBrowserGateway implements BrowserGateway {
           Boolean((element as HTMLButtonElement | HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).disabled);
 
         if (input.role && role !== input.role) continue;
+        if (
+          input.contenteditable !== undefined &&
+          element.isContentEditable !== input.contenteditable
+        ) continue;
         if (!matches(accessibleName, input.name, exact)) continue;
         if (!matches(text, input.text, exact)) continue;
         if (!matches(href ?? "", input.href, exact)) continue;
