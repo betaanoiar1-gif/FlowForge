@@ -32,6 +32,22 @@ export interface PageDiscovery {
   elements: SemanticElement[];
 }
 
+export interface SemanticQuery {
+  role?: string;
+  name?: string | RegExp;
+  text?: string | RegExp;
+  href?: string | RegExp;
+  exact?: boolean;
+  visible?: boolean;
+  enabled?: boolean;
+}
+
+export interface SemanticMatch {
+  matched: boolean;
+  count: number;
+  element: SemanticElement | null;
+}
+
 export interface BrowserGateway {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -40,6 +56,7 @@ export interface BrowserGateway {
   open(url: string): Promise<void>;
   screenshot(): Promise<Uint8Array>;
   discoverPage(): Promise<PageDiscovery>;
+  resolve(query: SemanticQuery): Promise<SemanticMatch>;
 }
 
 export { CdpBrowserGateway } from "./cdp.js";
