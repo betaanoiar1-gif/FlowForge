@@ -1,4 +1,5 @@
 import { CdpBrowserGateway } from "@flowforge/browser";
+import { chromium } from "playwright-core";
 
 const endpoint = process.env.FLOWFORGE_CDP_ENDPOINT ?? "http://127.0.0.1:9222";
 
@@ -49,7 +50,6 @@ async function main(): Promise<void> {
 }
 
 async function discoveryDiagnostics(): Promise<unknown> {
-  const { chromium } = await import("playwright-core");
   const browser = await chromium.connectOverCDP(endpoint);
   const context = browser.contexts()[0];
   const page = context.pages()[0];
