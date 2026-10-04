@@ -66,7 +66,7 @@ export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> 
   DOWNLOADING: ["VALIDATING", "FAILED", "CANCELLED"],
   VALIDATING: ["COMPLETED", "FAILED", "CANCELLED"],
   COMPLETED: [],
-  FAILED: ["PREPARING", "CANCELLED"],
+  FAILED: ["PREPARING", "GENERATING", "CANCELLED"],
   CANCELLED: [],
 };
 
@@ -74,9 +74,13 @@ export function canTransition(from: JobStatus, to: JobStatus): boolean {
   return JOB_TRANSITIONS[from].includes(to);
 }
 
-export function assertTransition(from: JobStatus, to: JobStatus): void {
+export function assertTransition(from: JobStatus, to: JobStatus, externalId?: string): void {
   if (!canTransition(from, to)) {
     throw new Error(`Invalid job transition: ${from} -> ${to}`);
+  }
+
+  if (from === "FAILED" && to === "GENERATING" && !externalId) {
+    throw new Error("Cannot resume failed generation without an externalId.");
   }
 }
 
