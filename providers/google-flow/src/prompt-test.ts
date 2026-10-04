@@ -1,5 +1,9 @@
 import { CdpBrowserGateway } from "@flowforge/browser";
+import { GenerationProviderError } from "@flowforge/core";
 import { GoogleFlowAdapter } from "./index.js";
+
+/** Script-authored failure text; safe to print because it never contains page content. */
+class DiagnosticError extends Error {}
 
 const endpoint =
   process.env.FLOWFORGE_CDP_ENDPOINT ?? "http://127.0.0.1:9222";
@@ -23,7 +27,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(initialGenerate, null, 2));
 
     if (initialGenerate.matched) {
-      throw new Error(
+      throw new DiagnosticError(
         "Generate control unexpectedly matched while the prompt was empty.",
       );
     }
@@ -37,9 +41,8 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(enabledGenerate, null, 2));
 
     if (!enabledGenerate.matched) {
-      throw new Error(
-        "Enabled Generate control was not uniquely discovered. Match count: " +
-          enabledGenerate.count,
+      throw new DiagnosticError(
+        `Enabled Generate control was not uniquely discovered. Match count: ${enabledGenerate.count}`,
       );
     }
 
@@ -52,7 +55,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(finalGenerate, null, 2));
 
     if (finalGenerate.matched) {
-      throw new Error(
+      throw new DiagnosticError(
         "Generate control unexpectedly remained enabled after clearing the prompt.",
       );
     }
@@ -66,6 +69,13 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error("[FlowForge] Safe Google Flow discovery test failed:", error);
+  // Provider codes and script-authored text are safe; raw browser errors may echo page data.
+  if (error instanceof GenerationProviderError) {
+    console.error(`[FlowForge] Safe Google Flow discovery test failed: ${error.code} — ${error.message}`);
+  } else if (error instanceof DiagnosticError) {
+    console.error(`[FlowForge] Safe Google Flow discovery test failed: ${error.message}`);
+  } else {
+    console.error("[FlowForge] Safe Google Flow discovery test failed. Browser detail was omitted to protect page contents.");
+  }
   process.exitCode = 1;
 });

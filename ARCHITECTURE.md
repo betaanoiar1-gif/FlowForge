@@ -1,8 +1,8 @@
 # FlowForge Architecture
 
 - **Baseline audit:** 2026-10-04, commit `f8b7019c1b924bc4a25b6642c5e1dc18e63578ef`.
-- **Current status:** Phase 1 durable mock-backed production slice implemented and locally validated (2026-10-04).
-- **Boundary:** no live Google Flow generation, private API, authenticated browser session, or access-control mechanism was used or inspected for this phase.
+- **Current status:** Phase 1 mock-backed slice is implemented; Phase 2 Google Flow browser provider is implemented and fake-tested (2026-10-04).
+- **Live-provider status:** no authorized CDP/browser session was available. Real Flow submission, status, correlation, and download are **BLOCKED / NOT RUN** and are not claimed as passing.
 
 ## Executive summary
 
@@ -14,9 +14,9 @@ Project → SceneVersion → idempotent Job → durable SQLite Queue
         → filesystem Asset → deterministic QC → Review → selected version
 ```
 
-The core, SQLite migrations/repository, queue/worker, filesystem asset store, QC, mock provider, CLI, automated tests, root scripts, and Phase 1 documentation are implemented. The path is independent of browser automation. There is still no product UI/API, and `providers/google-flow` is not a live generation adapter.
+The core, SQLite migrations/repository, queue/worker, filesystem asset store, QC, MockProvider, and CLI remain the proven local path. Phase 2 adds an isolated `GoogleFlowProvider`, generic browser-gateway operations, fake-based gateway/provider/queue tests, and an opt-in live smoke script. The Flow adapter currently implements one visible single-image workflow and reuses the existing queue, asset import, and deterministic QC. It is **not live-validated**: no authorized browser session was available, so real Flow selectors and behavior remain unverified. There is still no product UI/API.
 
-Public research and its limitations are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the runnable details in [docs/vertical-slice.md](./docs/vertical-slice.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
+Public research and implementation status are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), runnable Phase 1 details in [docs/vertical-slice.md](./docs/vertical-slice.md), Phase 2 details in [docs/google-flow-provider.md](./docs/google-flow-provider.md), browser mechanics in [docs/browser-gateway.md](./docs/browser-gateway.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
 
 ## 1. Current repository map
 
@@ -38,19 +38,19 @@ packages/
 
 providers/
   mock/                       deterministic, file-backed Phase 1 provider
-  google-flow/                isolated adapter shell; no Phase 1 generation
+  google-flow/                visible-UI single-image provider; live UI unverified
 ```
 
 | Package | Current responsibility | Important limit |
 | --- | --- | --- |
-| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; explicit provider capabilities; provider-neutral async methods; job status transitions. | No creative-story graph, API schema layer, UI, or workflow-agent tools yet. |
+| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job status transitions. | No creative-story graph, API schema layer, UI, or workflow-agent tools yet; no Flow/browser concepts. |
 | `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
 | `packages/queue` | Atomic claim, lease heartbeat, expired-lease recovery, same-attempt provider lookup, retry classification, file import/QC, and transactional finalization/ack. | Current worker accepts one distinct output; no background daemon/service. |
 | `packages/assets` | Safe local path construction, atomic file publication, integrity checking, streaming SHA-256, bytes outside SQLite. | No object-store backend or retention/garbage-collection service. |
 | `packages/qc` | Deterministic existence, readability, MIME/signature, size, checksum, and supported image dimensions. | No semantic continuity QC, video/audio probe, or unsupported-format dimension guess. |
 | `providers/mock` | `SUCCESS`, `TRANSIENT_FAILURE`, `PERMANENT_FAILURE`, `TIMEOUT`, and `DUPLICATE_RESULT`; request-key manifests and deterministic local image bytes. | Proves the orchestration contract only; it is not a generative model. |
-| `providers/google-flow` | Isolated adapter shell and existing browser diagnostics; provider-port methods throw intentionally. | No submission, status monitoring, result download, or live worker use in Phase 1. Existing prompt/control diagnostics are not called by the mock worker. |
-| `packages/browser`, `apps/browser-gateway` | Playwright/CDP operations against an explicitly user-controlled session. | Separate from the vertical slice; browser runtime was not tested here. |
+| `providers/google-flow` | Provider-port implementation for one visible single-image path; central Flow semantic targets, manual session/auth status, durable non-secret recovery manifest, visible correlation, and browser download. | Fake-tested only. No live Flow behavior passed; video/references/settings/batch are unsupported. |
+| `packages/browser`, `apps/browser-gateway` | Provider-neutral Playwright/CDP gateway with stable tab selection, observe/wait, click dispatch, guarded fill, hover, upload/download events, and redacted diagnostics; fake transport tests. | Fake transport tests do not validate real Chrome or Flow. Visible page text is sensitive application data and callers must not log it. |
 | `packages/events` | Existing event type vocabulary. | No persisted event stream, transactionally written outbox, or dispatcher. |
 
 ## 2. Phase 1 domain and persistence
@@ -76,9 +76,9 @@ Queue status, priority, availability time, claim time, lease deadline, worker ID
 The worker records the attempt before provider calls and follows this order:
 
 1. If an attempt already has a provider job ID, query its status.
-2. Otherwise, ask `findGeneration(providerRequestKey)` first.
-3. Only if lookup proves no provider generation exists does it call `createGeneration` with the same stable key.
-4. Persist the provider job ID, query status, and—on success—download the result.
+2. Otherwise, ask `findGeneration(providerRequestKey, request)` first. The optional generic request context lets an adapter correlate visible state without keeping another plaintext prompt copy.
+3. Only if lookup proves no provider generation exists does it call `createGeneration` with the same stable key. An ambiguous lookup throws a typed `submissionUnknown` error and keeps the same attempt.
+4. Persist the provider job ID, query status, and—on success—download the result with the same generic request context.
 5. Import the artifact to a deterministic external-file path, validate it, then atomically write asset/version/QC/pending-review/attempt-success/job-success/queue-ack metadata.
 
 A crash after remote acceptance but before SQLite records the provider ID is recovered by the provider lookup on the same request key. A crash after file publication but before DB finalization reuses the integrity-checked deterministic path. A crash after finalization cannot split job success from queue acknowledgement. A stale worker cannot renew or finalize a lease after recovery assigned a new claim.
@@ -93,11 +93,15 @@ The initial policy is one local worker. There is no broker, Redis, Kafka, cloud 
 
 ## 4. Provider boundary and safety
 
-`GenerationProvider` has a neutral capability record and operations for `findGeneration`, `createGeneration`, `getGenerationStatus`, `downloadResult`, and `cancelGeneration`. The `MockGenerationProvider` is file-backed so its request-key manifest/result survive repository and worker restarts. Provider errors distinguish retryability and uncertain submission.
+`GenerationProvider` has a neutral capability record and operations for `findGeneration`, `createGeneration`, `getGenerationStatus`, `downloadResult`, and `cancelGeneration`. Lookup/status/download may receive the same provider-neutral `GenerationProviderRequest` already held by the queue. `MockGenerationProvider` ignores that optional context and remains file-backed so its request-key manifest/result survive repository and worker restarts. Provider errors distinguish retryability and uncertain submission.
 
-`GoogleFlowAdapter` remains isolated and has conservative false capability declarations until behavior is validated. Its new provider-port generation methods throw intentionally; the Phase 1 queue never invokes the browser gateway. Existing prompt/control diagnostics from the baseline are not a submission/monitoring/download integration. No Google Flow prompt submission, provider selector work, result monitoring, or download was added for Phase 1.
+`GoogleFlowProvider` is isolated behind that port and uses only `BrowserGateway` visible controls. Its declared capability is one image at a time; video, references, frames, and batch capabilities are false, and non-default settings are rejected. The provider checks manual auth/access status, rejects an empty request prompt or unsupported request, refuses to overwrite a prompt editor that already contains text, writes a recovery manifest before Generate, and correlates only a unique prompt occurrence plus one newly visible accessible image element (video output is not accepted) or a visible active-generation signal. The manifest stores a one-way prompt hash and UI fingerprints, not the plaintext prompt, cookies, or browser storage. Downloads hover the correlated media and require a unique visible Download control. The existing queue then imports the file and runs the same deterministic QC as MockProvider.
 
-Any later browser use remains limited to a user's authorized browser session and visible, legitimate UI workflows. No authentication/CAPTCHA bypass, cookie/token extraction, private API, hidden endpoint, or provider-restriction evasion is permitted. If state is ambiguous or blocked, surface it for user action rather than inventing certainty.
+Provider error codes distinguish manual authentication/access blocks, changed UI/session state, click timeouts with unknown submission, ambiguous correlation, download failures, and correlated generation failures. A timeout is not a provider failure by itself: uncertain outcomes retain the current attempt so the next lookup inspects the persisted request before any new submission. The queue's durable classification and retry vocabulary are unchanged (`UNCERTAIN_PROVIDER_STATE` defers on the same attempt, bounded recovery terminates visibly, and `retryFailedJob` still refuses a blind resubmission of uncertain work); provider codes remain at the provider boundary rather than becoming a second retry engine. FlowForge supports local queue cancellation. Remote Google Flow cancellation is deliberately unavailable for in-flight work; the adapter never clicks a generic Stop/Cancel control without an unambiguous, tested per-attempt ownership signal.
+
+Fake browser/provider/queue-contract tests pass. They do not validate actual Google Flow UI behavior. Live submission, status, result correlation, and download are **BLOCKED / NOT RUN** because there was no authorized CDP session. If an active/complete result cannot be uniquely associated with the current attempt, the provider raises a typed uncertain error; the queue retains the same attempt and never guesses or blindly resubmits. UI assumptions live only in the provider package. No provider-specific fields were added to core domain types.
+
+Browser use is limited to a user's authorized, manually authenticated session and visible legitimate UI workflows. No authentication/CAPTCHA bypass, cookie/token extraction, private API, hidden endpoint, or provider-restriction evasion is permitted. Access/security challenges and changed/ambiguous UI stop for user action.
 
 ## 5. Asset, QC, review, and selection
 
@@ -110,7 +114,7 @@ A stored asset version receives `PENDING` review. A decision is explicitly `APPR
 ## 6. Deferred work
 
 - No API/web product surface, worker daemon, or production human-review interface.
-- No live Google Flow integration, authenticated browser generation, browser download, account-state handling, or provider credentials.
+- No live-validated Google Flow behavior: the single-image browser adapter is fake-tested, but real account eligibility, selectors, generation status, result correlation, and download remain untested. Authentication is manual; no provider credentials are stored.
 - No multi-output persistence in one job, object storage, global deduplication, or retention/repair daemon.
 - No creative brief/story/storyboard/Visual DNA graph, agents, audio, timeline, render/export, publishing, or analytics.
 - No durable event/outbox system or distributed queue.

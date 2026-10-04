@@ -141,7 +141,7 @@ export class LocalQueueWorker {
       } else {
         // Always ask the provider first. This closes the crash window after remote acceptance
         // but before providerJobId has been committed to SQLite.
-        handle = await this.provider.findGeneration(attempt.providerRequestKey) ??
+        handle = await this.provider.findGeneration(attempt.providerRequestKey, providerRequest) ??
           await this.provider.createGeneration(providerRequest);
         this.repository.setProviderJobId(
           job.id,
@@ -168,7 +168,7 @@ export class LocalQueueWorker {
 
     let snapshot: ProviderGenerationSnapshot;
     try {
-      snapshot = await this.provider.getGenerationStatus(handle.providerJobId);
+      snapshot = await this.provider.getGenerationStatus(handle.providerJobId, providerRequest);
     } catch (error) {
       return this.deferAttempt(
         claim,
@@ -204,7 +204,10 @@ export class LocalQueueWorker {
     snapshot: ProviderGenerationSnapshot,
   ): Promise<WorkerResult> {
     try {
-      const providedArtifacts = await this.provider.downloadResult(snapshot.providerJobId);
+      const providedArtifacts = await this.provider.downloadResult(
+        snapshot.providerJobId,
+        toProviderRequest(claim.job, claim.attempt),
+      );
       const artifacts = await normalizeArtifacts(providedArtifacts);
       if (artifacts.length !== 1) {
         return this.failAttempt(

@@ -1,7 +1,7 @@
 # FlowForge Engineering Decision Log
 
 - **Started:** 2026-10-04
-- **Status note:** D-001–D-012 record the Phase 0 architecture/research decisions. D-013–D-018 record Phase 1 implementation choices. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md) and [docs/vertical-slice.md](./docs/vertical-slice.md).
+- **Status note:** D-001–D-012 record Phase 0 architecture/research decisions, D-013–D-018 record Phase 1 implementation choices, and D-019–D-022 record Phase 2 provider choices. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/vertical-slice.md](./docs/vertical-slice.md), and [docs/google-flow-provider.md](./docs/google-flow-provider.md). Live Flow validation is blocked/not run.
 
 ## D-001 — Google Flow is a replaceable provider, not the product core
 
@@ -164,3 +164,48 @@
 - **Decision:** Keep schema history monotonic. Version 3 installs the late triggers with `IF NOT EXISTS`; existing version-2 databases upgrade without dropping data, and fresh/legacy databases apply versions 2 and 3 in sequence.
 - **Reason:** A database that has already recorded version 2 must not skip a later integrity requirement because the migration source changed.
 - **Trade-offs:** Schema version increments for a small guard-only change, and each later schema change must continue to add a forward migration rather than editing historical migrations.
+
+## D-019 — Google Flow stays behind the existing provider and browser ports
+
+- **Date / status:** 2026-10-04 · Accepted and implemented for the Phase 2 code path
+- **Context:** Phase 1's queue, MockProvider, asset store, and QC already establish the durable provider-neutral workflow. Rebuilding any of those would create a second source of truth and retry system.
+- **Options:** Add Flow selectors to core/queue; replace the worker or MockProvider; or implement an isolated provider using the existing `GenerationProvider` and `BrowserGateway` ports.
+- **Decision:** Keep Flow-specific semantics and target definitions inside `providers/google-flow`. Pass the existing generic request object to lookup/status/download only where it is needed for correlation; no Flow/browser fields are added to core domain records.
+- **Reason:** Preserves replaceability and lets deterministic MockProvider/queue behavior remain unchanged.
+- **Trade-offs:** The adapter is limited to what its one visible workflow can safely observe; unsupported Flow settings are rejected.
+
+## D-020 — Authentication and Flow actions remain visible and manual-session-only
+
+- **Date / status:** 2026-10-04 · Accepted and implemented
+- **Context:** The real provider needs a user-controlled browser session but must not bypass account/security controls or collect secrets.
+- **Options:** Automate sign-in or use private endpoints; or attach only to the user's configured CDP session and act through visible semantic controls.
+- **Decision:** Use CDP through `BrowserGateway`; report auth/block status from visible page state; leave sign-in and challenges to the user. Redact diagnostic output and never read/store/log cookies, credentials, tokens, or browser storage.
+- **Reason:** Makes the access boundary explicit and ensures security challenges are never treated as automation tasks.
+- **Trade-offs:** A user must keep a manually authenticated session available; UI changes can safely stop the provider.
+
+## D-021 — Ambiguous Flow state remains on the same durable attempt
+
+- **Date / status:** 2026-10-04 · Accepted and fake-tested; live UI behavior unverified
+- **Context:** Flow does not document a stable per-submission ID in the reviewed public UI material, so a click or generic result card alone is not enough to prove which job produced it.
+- **Options:** Resubmit on timeout; accept the newest result heuristically; or persist a request-key manifest and require unique visible prompt/media evidence before accepting or downloading.
+- **Decision:** Persist the manifest before Generate, derive a local provider ID from the durable attempt key, and correlate only one new prompt occurrence plus one accessible new media element (or a visible active-generation signal). Store a prompt hash and baseline fingerprints, not a second plaintext prompt. Any ambiguity raises `submissionUnknown`; the existing queue defers the same attempt and never creates a blind replacement submission.
+- **Reason:** Reduces duplicate generations and prevents attaching an unrelated Flow asset to a job.
+- **Trade-offs:** Some legitimate Flow pages may not expose enough visible evidence and will remain blocked for operator resolution. Live correlation has not yet been verified.
+
+## D-022 — Phase 2 capability declarations are deliberately narrow
+
+- **Date / status:** 2026-10-04 · Accepted for implementation; live validation pending
+- **Context:** Flow exposes multiple image/video settings, references, and frame workflows, while the first adapter path can verify only a small subset.
+- **Options:** Advertise the product's full feature surface; claim only the implemented one-image/no-reference workflow; or disable all provider functionality until a live session is available.
+- **Decision:** Declare only single-image generation. Video, references, frames, and batch generation remain false; non-default settings are rejected. Keep the live smoke separate and opt-in. Fake tests exercise the declared path, but actual Google Flow behavior remains **BLOCKED / NOT RUN** until an authorized session executes the smoke test.
+- **Reason:** Avoids overstating support or consuming quota in ordinary CI while delivering the narrow provider implementation.
+- **Trade-offs:** The capability flag describes implemented/fake-tested path, not a claim that real Flow has passed; release readiness still requires authorized live validation.
+
+## D-023 — Flow timeouts and cancellation preserve ownership uncertainty
+
+- **Date / status:** 2026-10-04 · Accepted and fake-tested; live UI behavior unverified
+- **Context:** A browser click timeout does not prove Flow rejected a generation, while a generic visible Stop control does not prove which generation it would stop.
+- **Options:** Treat timeouts as failures and submit again; click a generic Stop control; or persist uncertain state, recover the same attempt, and leave remote cancellation unavailable until ownership is testable.
+- **Decision:** A dispatched Generate click without a verified visible state change raises `FLOW_TIMEOUT` with `submissionUnknown: true`. The existing queue defers the same attempt and performs request-key lookup/status inspection before any recovery decision. FlowForge local cancellation remains supported; the Flow adapter does not click remote Stop/Cancel controls for in-flight requests and returns `FLOW_CANCEL_UNAVAILABLE`.
+- **Reason:** Prevents timeouts from becoming duplicate generations and prevents a cancellation from targeting unrelated user work.
+- **Trade-offs:** A remote operation may continue after local cancellation or remain uncertain until bounded recovery/operator intervention; this does not imply a provider-side failure or cancellation.

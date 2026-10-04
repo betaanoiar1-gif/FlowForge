@@ -14,6 +14,7 @@ export interface BrowserTab {
   title: string;
 }
 
+/** Provider-neutral projection of a single visible browser element. */
 export interface SemanticElement {
   tagName: string;
   role: string | null;
@@ -24,6 +25,7 @@ export interface SemanticElement {
   contenteditable: boolean;
   disabled: boolean;
   visible: boolean;
+  selected: boolean | null;
 }
 
 export interface PageDiscovery {
@@ -33,6 +35,11 @@ export interface PageDiscovery {
   elements: SemanticElement[];
 }
 
+/** Visible page data only; callers must not persist or log arbitrary text. */
+export interface PageObservation extends PageDiscovery {
+  visibleText: string;
+}
+
 export interface SemanticQuery {
   role?: string;
   name?: string | RegExp;
@@ -40,7 +47,10 @@ export interface SemanticQuery {
   href?: string | RegExp;
   exact?: boolean;
   visible?: boolean;
+  /** By default only enabled controls match; false selects disabled controls, true selects enabled ones. */
   enabled?: boolean;
+  /** Includes both enabled and disabled controls, for state inspection only. */
+  includeDisabled?: boolean;
   contenteditable?: boolean;
 }
 
@@ -73,7 +83,12 @@ export interface SemanticActionResult {
   action: "click";
   query: SemanticQuery;
   matched: boolean;
+  /** True once the unique target's click handler was actually dispatched. */
+  dispatched: boolean;
+  /** True only when a visible page-state change verified the action. */
   verified: boolean;
+  /** True when the bounded action/verification deadline elapsed. */
+  timedOut?: boolean;
   beforeUrl: string;
   afterUrl: string;
   beforeTitle: string;
@@ -86,23 +101,50 @@ export interface SemanticInputResult {
   query: SemanticQuery;
   matched: boolean;
   verified: boolean;
-  beforeValue: string;
-  afterValue: string;
+  timedOut?: boolean;
+  beforeLength: number;
+  afterLength: number;
   error?: string;
 }
 
+export interface BrowserDownload {
+  path: string;
+  fileName: string;
+}
+
+export { BrowserGatewayError } from "./errors.js";
+
+export interface BrowserUpload {
+  fileNames: string[];
+}
+
 export interface BrowserGateway {
+  /** Opaque, non-secret identifier for the attached browser endpoint/session. */
+  readonly sessionId?: string;
+  /** Attach to a browser the user launched and authenticated manually. */
   connect(): Promise<void>;
+  /** Detach without reading or persisting authentication material. */
   disconnect(): Promise<void>;
   state(): Promise<BrowserState>;
   tabs(): Promise<BrowserTab[]>;
-  open(url: string): Promise<void>;
+  selectTab(tabId: string): Promise<void>;
+  open(url: string, options?: { newTab?: boolean }): Promise<void>;
   screenshot(): Promise<Uint8Array>;
   discoverPage(): Promise<PageDiscovery>;
+  observe(): Promise<PageObservation>;
   domDiagnostics(): Promise<DomDiagnostics>;
   resolve(query: SemanticQuery): Promise<SemanticMatch>;
+  waitFor(query: SemanticQuery, timeoutMs?: number): Promise<SemanticMatch>;
   click(query: SemanticQuery, timeoutMs?: number): Promise<SemanticActionResult>;
-  fill(query: SemanticQuery, value: string, timeoutMs?: number): Promise<SemanticInputResult>;
+  hover(query: SemanticQuery, timeoutMs?: number): Promise<boolean>;
+  fill(
+    query: SemanticQuery,
+    value: string,
+    timeoutMs?: number,
+    options?: { expectedBeforeValue?: string },
+  ): Promise<SemanticInputResult>;
+  upload(trigger: SemanticQuery, filePaths: string[], timeoutMs?: number): Promise<BrowserUpload>;
+  download(query: SemanticQuery, destinationDirectory: string, timeoutMs?: number): Promise<BrowserDownload>;
 }
 
 export { CdpBrowserGateway } from "./cdp.js";

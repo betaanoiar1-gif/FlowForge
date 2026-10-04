@@ -165,10 +165,11 @@ export class GenerationProviderError extends Error {
 export interface GenerationProvider {
   readonly id: string;
   readonly capabilities: ProviderCapabilities;
-  findGeneration(providerRequestKey: string): Promise<ProviderGenerationHandle | null>;
+  /** The optional request lets providers correlate visible remote state without storing its prompt. */
+  findGeneration(providerRequestKey: string, request?: GenerationProviderRequest): Promise<ProviderGenerationHandle | null>;
   createGeneration(request: GenerationProviderRequest): Promise<ProviderGenerationHandle>;
-  getGenerationStatus(providerJobId: string): Promise<ProviderGenerationSnapshot>;
-  downloadResult(providerJobId: string): Promise<ProviderArtifact[]>;
+  getGenerationStatus(providerJobId: string, request?: GenerationProviderRequest): Promise<ProviderGenerationSnapshot>;
+  downloadResult(providerJobId: string, request?: GenerationProviderRequest): Promise<ProviderArtifact[]>;
   cancelGeneration(providerJobId: string): Promise<void>;
 }
 

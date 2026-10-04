@@ -1,8 +1,8 @@
 # FlowForge Implementation Plan
 
-- **Current stage:** Phase 1 durable mock-backed production slice implemented and validated (2026-10-04).
-- **Next coding milestone:** provider-independent browser hardening only after the core slice is reviewed; do not integrate Google Flow in Phase 1.
-- **Provider rule:** Google Flow remains a replaceable backend. The MockProvider is the Phase 1 proof of the provider-neutral workflow.
+- **Current stage:** Phase 2 provider implementation and fake-based verification are complete (2026-10-04); live Flow validation is **BLOCKED / NOT RUN** without an authorized CDP session.
+- **Next validation milestone:** run the separate opt-in live smoke on a user-authorized, manually authenticated Flow session; stop if UI correlation is ambiguous.
+- **Provider rule:** Google Flow remains replaceable and isolated. MockProvider remains the deterministic local/CI provider; neither queue nor domain is replaced.
 
 ## Phase 1 slice delivered
 
@@ -42,21 +42,37 @@ The CLI runs a deterministic success scenario and prints the persisted report. T
 - A provider that cannot determine an ambiguous request is not retried under a new attempt automatically. Bounded recovery ends visibly; a new scene version is the safe path rather than re-submitting the same logical generation blindly.
 - CLI review is a demonstration operator decision, not a production human-review interface. No UI is included.
 
+## Phase 2 — Google Flow browser provider
+
+The Phase 2 code path is implemented behind the existing `GenerationProvider` and `BrowserGateway` boundaries. It supports only one image request with no references or non-default settings. The browser target definitions live only in `providers/google-flow`; generic browser mechanics remain in `packages/browser`. The durable queue, request-key recovery, filesystem asset import, and deterministic QC are reused unchanged.
+
+### Phase 2 acceptance criteria
+
+1. **Manual session and status:** attach to the configured CDP endpoint; report disconnected/no-page/not-Flow/manual-auth-required/blocked/busy/ready/UI-changed states from visible page data. Never automate authentication or inspect browser storage.
+2. **Narrow request:** accept one image request only when Image mode is visibly selected, a unique visible prompt editor exists, the guarded fill confirms the editor is still empty at write time and reads back exactly, the request contains no unsupported references/settings, and a unique enabled visible Generate control exists after fill. No silent overwrite or setting guess.
+3. **Durable same-attempt recovery:** persist an attempt-keyed manifest before Generate. Store a one-way prompt hash, baseline visible prompt count/media fingerprints, opaque session identifier, state, and correlation evidence—not cookies, credentials, browser storage, raw page text, or plaintext prompt. Pass the existing generic request object through the provider port to correlate after process restart.
+4. **Safe correlation/download:** accept only exactly one new prompt occurrence and one accessible new media element, or a prompt-correlated visible active-generation signal. Recheck the same result before hovering and using a unique visible Download control. Any missing/duplicate/changed evidence raises a typed uncertain error and the existing queue retains the same attempt; no blind resubmission.
+5. **Existing finalization:** return one local artifact to the existing queue; reuse the current asset store, deterministic QC, attempt provenance, and transactional finalization. Do not add a parallel retry engine or duplicate asset/QC pipeline.
+6. **Fake tests:** exercise gateway operations, auth/block handling, unsupported requests, request-key idempotency, post-click uncertainty, restart recovery, correlation, download, and the provider contract through the existing queue/asset/QC packages without an account.
+7. **Typed errors, timeouts, and cancellation:** map failures to distinct `GenerationProviderError` codes for manual auth/access block, changed UI/session, click/download timeout, ambiguous correlation, download failure, unsupported request, recovery-storage failure, and correlated generation failure. A timeout is uncertain state, never proof of provider failure: the queue defers the same attempt and re-inspects it before any submission decision. FlowForge local cancellation is final; remote Flow cancellation is deliberately unavailable (`FLOW_CANCEL_UNAVAILABLE`) and never clicks a generic Stop/Cancel control without unambiguous per-attempt ownership.
+8. **Separate live smoke:** keep actual Flow generation opt-in and outside ordinary CI. The script requires explicit confirmation and must never retry a timed-out or ambiguous request under a new key.
+
+**Code gate:** build/typecheck and fake tests pass. **Live gate:** BLOCKED / NOT RUN because no authorized browser session was available; no claim of real Flow submission, correlation, or download success is made. See [docs/google-flow-provider.md](./docs/google-flow-provider.md).
+
 ## Remaining milestones
 
 | Phase | Scope | Exit gate |
 | --- | --- | --- |
 | **0 — Audit** | Inspect the checkout; document current system, public feature research, gaps, decisions, and the first slice. | **Complete.** See [ARCHITECTURE.md](./ARCHITECTURE.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md). |
 | **1 — Durable mock-backed vertical slice** | Project/scene versions, stable logical idempotency, schema migrations, durable queue/leases/attempts, MockProvider, asset store, deterministic QC, review/selection, CLI and tests. | **Complete.** Validation commands and constraints are recorded below and in [docs/vertical-slice.md](./docs/vertical-slice.md). |
-| **2 — Application services and operator UX** | Add narrowly scoped use-case services and, only when needed, a review/queue interface over the proven repository boundaries. | UI decisions use persisted IDs and cannot mutate storage directly; selection/review remains explicit. |
-| **3 — Browser layer** | Harden provider-independent session operations: lifecycle, explicit page selection, allowed navigation, semantic input/click, waits/observe, upload/download, screenshots/evidence, clean shutdown, and test doubles. | Tests pass without a Google account; browser commands run only against a configured, user-owned session and allowed origin. |
-| **4 — Google Flow adapter** | Only after authorization and public UI feasibility are established, implement visible user-authorized UI workflows behind the existing provider port. No private API, hidden endpoint, credential extraction, or access-control bypass. | Opt-in non-generating discovery first; any generation is explicit and user-authorized. Ambiguous outcomes pause rather than duplicate. No live generation in routine CI. |
-| **5 — Creative intelligence** | Add structured brief/story/story-spine/storyboard planning, shots, prompts, character/world profiles, Visual DNA, and continuity constraints. AI adapters return schema-validated data through explicit application tools. | Deterministic fixtures validate planner schemas, IDs, references, and scene-level regeneration. |
-| **6 — Rich review and QC** | Add richer review categories/feedback and optional deterministic media probes or validated semantic checks. Keep unsupported metrics `NOT_EVALUATED`. | Evidence links to persisted records; no semantic score without a validated evaluator and reviewable evidence. |
-| **7 — Media pipeline** | Add isolated audio/narration/music/caption/timeline/render/export jobs. Preserve source asset/version provenance and support requested output formats. | Reproducible render fixture and format-specific QC trace to source scene versions, generations, assets, and reviews. |
-| **8 — Agent system** | Add specialist agents over typed, authorized domain tools and explicit workflow tasks. | Schema validation, tool authorization, audit logs, and policy tests; agents cannot write arbitrary DB rows. |
-| **9 — Publishing** | Add provider-independent publishing adapters, scheduled/queued publish jobs, status, retry, and audit history. | Mock publishing tests first; credentials remain in environment/secret storage, never source or logs. |
-| **10 — Analytics** | Derive retry/duration/provider/rejection/render/publish metrics from persisted workflow history. | Reproducible denominators/time ranges; no invented provider or semantic scores. |
+| **2 — Google Flow browser provider** | Visible-UI single-image provider behind the existing provider port, gateway hardening, durable same-attempt recovery, safe correlation/download, typed errors, and fake tests. | **Code complete and fake-tested.** Live gate is **BLOCKED / NOT RUN** until the opt-in smoke runs on a user-authorized session. |
+| **3 — Application services and operator UX** | Add narrowly scoped use-case services and, only when needed, a review/queue interface over the proven repository boundaries. | UI decisions use persisted IDs and cannot mutate storage directly; selection/review remains explicit. |
+| **4 — Creative intelligence** | Add structured brief/story/story-spine/storyboard planning, shots, prompts, character/world profiles, Visual DNA, and continuity constraints. AI adapters return schema-validated data through explicit application tools. | Deterministic fixtures validate planner schemas, IDs, references, and scene-level regeneration. |
+| **5 — Rich review and QC** | Add richer review categories/feedback and optional deterministic media probes or validated semantic checks. Keep unsupported metrics `NOT_EVALUATED`. | Evidence links to persisted records; no semantic score without a validated evaluator and reviewable evidence. |
+| **6 — Media pipeline** | Add isolated audio/narration/music/caption/timeline/render/export jobs. Preserve source asset/version provenance and support requested output formats. | Reproducible render fixture and format-specific QC trace to source scene versions, generations, assets, and reviews. |
+| **7 — Agent system** | Add specialist agents over typed, authorized domain tools and explicit workflow tasks. | Schema validation, tool authorization, audit logs, and policy tests; agents cannot write arbitrary DB rows. |
+| **8 — Publishing** | Add provider-independent publishing adapters, scheduled/queued publish jobs, status, retry, and audit history. | Mock publishing tests first; credentials remain in environment/secret storage, never source or logs. |
+| **9 — Analytics** | Derive retry/duration/provider/rejection/render/publish metrics from persisted workflow history. | Reproducible denominators/time ranges; no invented provider or semantic scores. |
 
 ## Cross-cutting engineering rules
 
