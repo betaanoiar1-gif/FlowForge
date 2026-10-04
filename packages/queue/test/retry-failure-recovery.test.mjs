@@ -137,7 +137,8 @@ const baseRequest = {
     () => new GenerationRetryWorker(reopened, new SqliteJobQueue(reopened), () => provider, publisher).retryOnce("job-budget", 1),
     /Retry limit exhausted/,
   );
-  assert.equal(submitCalls, 1);
+  // The exhausted retry must not invoke the provider again.
+  assert.equal(submitCalls, 2);
   reopened.close();
   console.log("[Phase 1J] retry budget restart persistence + exhaustion: PASS");
 }
