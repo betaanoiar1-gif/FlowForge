@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import type { CharacterRecord, ProjectRecord, SceneCharacterRecord, SceneRecord } from "@flowforge/core";
+import type { CharacterRecord, GenerationRequest, ProjectRecord, SceneCharacterRecord, SceneRecord } from "@flowforge/core";
 
 export const PROMPT_COMPILER_VERSION = "1.0.0";
 export const PROMPT_SCHEMA_VERSION = 1;
@@ -206,6 +206,36 @@ function renderPrompt(source: ReturnType<typeof buildSource>): string {
   }
 
   return lines.join("\n");
+}
+
+export function buildGenerationRequest(
+  compiled: CompiledPrompt,
+  provider: string,
+): GenerationRequest {
+  const normalizedProvider = provider.trim();
+  if (!normalizedProvider) {
+    throw new Error("Generation provider is required.");
+  }
+
+  if (!compiled.id || !compiled.deterministicHash) {
+    throw new Error("Compiled prompt provenance is required.");
+  }
+
+  return {
+    projectId: compiled.projectId,
+    sceneId: compiled.sceneId,
+    provider: normalizedProvider,
+    prompt: compiled.prompt,
+    references: [...compiled.metadata.referenceIds],
+    metadata: {
+      flowforge: {
+        compiledPromptId: compiled.id,
+        deterministicHash: compiled.deterministicHash,
+        compilerVersion: compiled.compilerVersion,
+        schemaVersion: compiled.schemaVersion,
+      },
+    },
+  };
 }
 
 export class PromptCompilationStore {
