@@ -96,6 +96,12 @@ export class ProviderExecutionWorker {
       );
     }
 
+    if (job.status === "FAILED" && job.externalId) {
+      throw new Error(
+        `Execution worker refuses to resubmit failed job ${job.id} with externalId ${job.externalId}`,
+      );
+    }
+
     this.events?.publish({ type: "generation.created", at: new Date().toISOString(), jobId: job.id });
 
     const provider = this.resolveProvider(job.request.provider);
@@ -536,6 +542,65 @@ export class ResumableGenerationWorker {
     }
 
     throw new Error(`Job ${job.id} is not resumable from ${job.status}`);
+  }
+}
+
+export interface RetryExecutionResult {
+  jobId: string;
+  status: JobStatus;
+  retryCount: number;
+  maxRetries: number;
+  mode: "submit" | "resume";
+}
+
+export class GenerationRetryWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly queue: SqliteJobQueue,
+    private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  async retryOnce(jobId: string, maxRetries = 3): Promise<RetryExecutionResult | null> {
+    const job = this.repository.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+
+    let retryState;
+    try {
+      retryState = this.repository.requestRetry(jobId, maxRetries);
+    } catch (error) {
+      const state = this.repository.getRetryState(jobId, maxRetries);
+      if (state.retryCount >= state.maxRetries) {
+        this.events?.publish({
+          type: "generation.retry_exhausted",
+          at: new Date().toISOString(),
+          jobId,
+          retryCount: state.retryCount,
+          maxRetries: state.maxRetries,
+        });
+      }
+      throw error;
+    }
+
+    const mode = job.externalId ? "resume" : "submit";
+    this.events?.publish({
+      type: "generation.retry_requested",
+      at: new Date().toISOString(),
+      jobId,
+      retryCount: retryState.retryCount,
+      maxRetries: retryState.maxRetries,
+      mode,
+    });
+
+    if (mode === "resume") {
+      const worker = new ResumableGenerationWorker(this.repository, this.resolveProvider, this.events);
+      const result = await worker.resumeOnce(jobId);
+      return result ? { ...result, retryCount: retryState.retryCount, maxRetries: retryState.maxRetries, mode } : null;
+    }
+
+    const execution = new ProviderExecutionWorker(this.repository, this.queue, this.resolveProvider, this.events);
+    const result = await execution.runOnce();
+    return result ? { jobId: result.jobId, status: result.status, retryCount: retryState.retryCount, maxRetries: retryState.maxRetries, mode } : null;
   }
 }
 
