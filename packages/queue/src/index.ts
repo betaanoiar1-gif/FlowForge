@@ -1,4 +1,5 @@
 import type { JobStatus, ProviderAdapter } from "@flowforge/core";
+import type { EventPublisher } from "@flowforge/events";
 import { SqliteJobRepository, type QueueEntry } from "@flowforge/storage";
 
 export { type QueueEntry };
@@ -75,6 +76,7 @@ export class ProviderExecutionWorker {
     private readonly repository: SqliteJobRepository,
     private readonly queue: SqliteJobQueue,
     private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
   ) {}
 
   async runOnce(): Promise<ProviderExecutionResult | null> {
@@ -94,6 +96,8 @@ export class ProviderExecutionWorker {
       );
     }
 
+    this.events?.publish({ type: "generation.created", at: new Date().toISOString(), jobId: job.id });
+
     const provider = this.resolveProvider(job.request.provider);
 
     if (!provider) {
@@ -107,9 +111,11 @@ export class ProviderExecutionWorker {
 
     try {
       this.repository.transition(job.id, "PREPARING");
+      this.events?.publish({ type: "generation.preparing", at: new Date().toISOString(), jobId: job.id });
       await provider.connect();
 
       this.repository.transition(job.id, "SUBMITTING");
+      this.events?.publish({ type: "generation.submitting", at: new Date().toISOString(), jobId: job.id });
       const submission = await provider.submit(job.request);
 
       if (!submission.externalId) {
@@ -120,6 +126,7 @@ export class ProviderExecutionWorker {
 
       this.repository.setExternalId(job.id, submission.externalId);
       const updated = this.repository.transition(job.id, "GENERATING");
+      this.events?.publish({ type: "generation.generating", at: new Date().toISOString(), jobId: job.id, externalId: submission.externalId });
 
       return {
         jobId: updated.id,
@@ -132,6 +139,7 @@ export class ProviderExecutionWorker {
 
       if (current && current.status !== "FAILED") {
         this.repository.transition(job.id, "FAILED", message);
+        this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason: message });
       }
 
       return null;
