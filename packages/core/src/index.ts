@@ -90,3 +90,41 @@ export function transitionJob(job: GenerationJob, to: JobStatus, error?: string)
     updatedAt: now,
   };
 }
+
+
+export interface ProjectRecord {
+  id: Id;
+  name: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SceneRecord {
+  id: Id;
+  projectId: Id;
+  name: string;
+  sequence: number;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CharacterRecord {
+  id: Id;
+  projectId: Id;
+  name: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SceneCharacterRecord {
+  sceneId: Id;
+  characterId: Id;
+  role?: string;
+  createdAt: string;
+}
