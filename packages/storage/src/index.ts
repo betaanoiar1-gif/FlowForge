@@ -79,7 +79,9 @@ export class SqliteJobRepository {
       );
 
 
-      CREATE TABLE IF NOT EXISTS generation_retry_state (job_id TEXT PRIMARY KEY, retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, updated_at TEXT NOT NULL, FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE)\n\n      CREATE TABLE IF NOT EXISTS queue_entries (
+      CREATE TABLE IF NOT EXISTS generation_retry_state (job_id TEXT PRIMARY KEY, retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, updated_at TEXT NOT NULL, FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE)
+
+      CREATE TABLE IF NOT EXISTS queue_entries (
         job_id TEXT PRIMARY KEY,
         enqueued_at TEXT NOT NULL,
         FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
