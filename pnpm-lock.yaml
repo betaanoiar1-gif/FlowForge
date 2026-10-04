@@ -37,6 +37,22 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/compiler:
+    dependencies:
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../core
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.11.1
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   packages/events: {}
 
   packages/queue:
