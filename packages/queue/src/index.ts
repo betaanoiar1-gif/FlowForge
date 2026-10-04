@@ -241,3 +241,117 @@ export class ProviderCompletionWorker {
     }
   }
 }
+
+export interface ProviderDownloadResult {
+  jobId: string;
+  status: JobStatus;
+  assets: string[];
+}
+
+export class ProviderDownloadWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  async runOnce(
+    jobId: string,
+    result: Awaited<ReturnType<ProviderAdapter["waitForCompletion"]>>,
+  ): Promise<ProviderDownloadResult | null> {
+    const job = this.repository.get(jobId);
+
+    if (!job) {
+      throw new Error(`Generation job not found: ${jobId}`);
+    }
+
+    if (job.status !== "VERIFYING") {
+      throw new Error(
+        `Download worker cannot start job ${job.id} from ${job.status}`,
+      );
+    }
+
+    if (!job.externalId) {
+      throw new Error(`Generation job ${job.id} has no externalId`);
+    }
+
+    const provider = this.resolveProvider(job.request.provider);
+
+    if (!provider) {
+      const reason = `Provider not registered: ${job.request.provider}`;
+      this.repository.transition(job.id, "FAILED", reason);
+      this.events?.publish({
+        type: "generation.failed",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        reason,
+      });
+      return null;
+    }
+
+    try {
+      this.repository.transition(job.id, "DOWNLOADING");
+      this.events?.publish({
+        type: "generation.downloading",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        externalId: job.externalId,
+      });
+
+      const paths = await provider.download(result);
+
+      if (!Array.isArray(paths) || paths.some((path) => typeof path !== "string" || !path.trim())) {
+        throw new Error(`Provider ${provider.id} returned invalid asset paths for job ${job.id}`);
+      }
+
+      for (const path of paths) {
+        const assetId = `asset_${createDeterministicAssetId(job.id, path)}`;
+        if (!this.repository.getAsset(assetId)) {
+          this.repository.registerAsset({
+            id: assetId,
+            projectId: job.request.projectId,
+            sceneId: job.request.sceneId,
+            jobId: job.id,
+            kind: "generation-output",
+            path,
+            provider: provider.id,
+            externalId: job.externalId,
+          });
+        }
+      }
+
+      const updated = this.repository.transition(job.id, "VALIDATING");
+      this.events?.publish({
+        type: "generation.validating",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        externalId: job.externalId,
+      });
+
+      return {
+        jobId: updated.id,
+        status: updated.status,
+        assets: paths,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const current = this.repository.get(job.id);
+
+      if (current && current.status !== "FAILED") {
+        this.repository.transition(job.id, "FAILED", message);
+        this.events?.publish({
+          type: "generation.failed",
+          at: new Date().toISOString(),
+          jobId: job.id,
+          reason: message,
+        });
+      }
+
+      return null;
+    }
+  }
+}
+
+function createDeterministicAssetId(jobId: string, path: string): string {
+  return createHash("sha256").update(`${jobId}\\0${path}`).digest("hex").slice(0, 24);
+}
