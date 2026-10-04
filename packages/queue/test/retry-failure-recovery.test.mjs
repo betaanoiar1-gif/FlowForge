@@ -98,6 +98,10 @@ const baseRequest = {
   assert.equal(resumeRetryEvent?.type, "generation.retry_requested");
   assert.equal(resumeRetryEvent?.mode, "resume");
 
+  // Direct queue insertion is only forbidden by the externalId recovery guard
+  // when the job is FAILED; other non-queueable states are rejected generically.
+  repository.transition("job-external", "FAILED", "completion still requires recovery");
+  assert.equal(repository.get("job-external")?.externalId, "external-2");
   assert.throws(() => queue.enqueue("job-external"), /externalId/);
   repository.close();
   console.log("[Phase 1J] failed job with externalId -> resume without resubmission: PASS");
