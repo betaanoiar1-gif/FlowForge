@@ -421,6 +421,102 @@ export class ProviderValidationWorker {
   }
 }
 
+
+export interface RecoveryResult {
+  jobId: string;
+  status: JobStatus;
+}
+
+export class ResumableGenerationWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  async resumeOnce(jobId: string): Promise<RecoveryResult | null> {
+    const job = this.repository.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+
+    if (job.status === "GENERATING") {
+      const worker = new ProviderCompletionWorker(this.repository, this.resolveProvider, this.events);
+      const result = await worker.runOnce(jobId);
+      return result ? { jobId: result.jobId, status: result.status } : null;
+    }
+
+    if (job.status === "VERIFYING") {
+      const provider = this.resolveProvider(job.request.provider);
+      if (!provider) {
+        const reason = `Provider not registered: ${job.request.provider}`;
+        this.repository.transition(job.id, "FAILED", reason);
+        this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason });
+        return null;
+      }
+      if (!job.externalId) throw new Error(`Generation job ${job.id} has no externalId`);
+      try {
+        const result = await provider.waitForCompletion(job.externalId);
+        if (result.jobId !== job.id || result.provider !== provider.id) {
+          throw new Error(`Provider completion result does not match job ${job.id}`);
+        }
+        const worker = new ProviderDownloadWorker(this.repository, this.resolveProvider, this.events);
+        const downloaded = await worker.runOnce(jobId, result);
+        return downloaded ? { jobId: downloaded.jobId, status: downloaded.status } : null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const current = this.repository.get(job.id);
+        if (current && current.status !== "FAILED") {
+          this.repository.transition(job.id, "FAILED", message);
+          this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason: message });
+        }
+        return null;
+      }
+    }
+
+    if (job.status === "DOWNLOADING") {
+      const provider = this.resolveProvider(job.request.provider);
+      if (!provider) {
+        const reason = `Provider not registered: ${job.request.provider}`;
+        this.repository.transition(job.id, "FAILED", reason);
+        this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason });
+        return null;
+      }
+      if (!job.externalId) throw new Error(`Generation job ${job.id} has no externalId`);
+      try {
+        const result = await provider.waitForCompletion(job.externalId);
+        if (result.jobId !== job.id || result.provider !== provider.id) {
+          throw new Error(`Provider completion result does not match job ${job.id}`);
+        }
+        const worker = new ProviderDownloadWorker(this.repository, this.resolveProvider, this.events);
+        const downloaded = await worker.runOnce(jobId, result);
+        return downloaded ? { jobId: downloaded.jobId, status: downloaded.status } : null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const current = this.repository.get(job.id);
+        if (current && current.status !== "FAILED") {
+          this.repository.transition(job.id, "FAILED", message);
+          this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason: message });
+        }
+        return null;
+      }
+    }
+
+    if (job.status === "VALIDATING") {
+      const assets = this.repository.listProjectAssets(job.request.projectId)
+        .filter((asset) => asset.jobId === job.id)
+        .map((asset) => asset.path);
+      const worker = new ProviderValidationWorker(this.repository, this.resolveProvider, this.events);
+      const validated = await worker.runOnce(jobId, assets);
+      return validated ? { jobId: validated.jobId, status: validated.status } : null;
+    }
+
+    if (job.status === "COMPLETED") {
+      return { jobId: job.id, status: job.status };
+    }
+
+    throw new Error(`Job ${job.id} is not resumable from ${job.status}`);
+  }
+}
+
 function createDeterministicAssetId(jobId: string, path: string): string {
   const input = `${jobId}\\0${path}`;
   let a = 0x811c9dc5;
