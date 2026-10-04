@@ -1,0 +1,21 @@
+{
+  "name": "@flowforge/compiler",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx test/prompt-compiler.test.ts"
+  },
+  "dependencies": {
+    "@flowforge/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  }
+}
