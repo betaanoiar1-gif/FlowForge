@@ -166,6 +166,27 @@ export class SqliteJobRepository {
     return this.get(id)!;
   }
 
+  cancel(id: string): GenerationJob {
+    const current = this.get(id);
+    if (!current) throw new Error(`Generation job not found: ${id}`);
+    if (current.status === "COMPLETED") {
+      throw new Error(`Cannot cancel completed job ${id}`);
+    }
+    if (current.status === "CANCELLED") {
+      return current;
+    }
+    assertTransition(current.status, "CANCELLED");
+    const updatedAt = new Date().toISOString();
+    const transaction = this.db.transaction(() => {
+      this.db.prepare(
+        "UPDATE generation_jobs SET status = ?, error = NULL, updated_at = ? WHERE id = ?",
+      ).run("CANCELLED", updatedAt, id);
+      this.db.prepare("DELETE FROM queue_entries WHERE job_id = ?").run(id);
+    });
+    transaction();
+    return this.get(id)!;
+  }
+
   setExternalId(id: string, externalId: string): GenerationJob {
     const updatedAt = new Date().toISOString();
     this.db.prepare(
