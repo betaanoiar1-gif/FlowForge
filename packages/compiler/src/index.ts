@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
-import type { CharacterRecord, ProjectRecord, SceneRecord } from "@flowforge/core";
+import type { CharacterRecord, ProjectRecord, SceneCharacterRecord, SceneRecord } from "@flowforge/core";
 
 export const PROMPT_COMPILER_VERSION = "1.0.0";
 export const PROMPT_SCHEMA_VERSION = 1;
@@ -17,6 +17,7 @@ export interface PromptCompilationInput {
   project: ProjectRecord;
   scene: SceneRecord;
   characters: CharacterRecord[];
+  sceneCharacters?: SceneCharacterRecord[];
   references?: PromptReference[];
   creativeIntent?: string;
 }
@@ -88,12 +89,28 @@ function validateInput(input: PromptCompilationInput): void {
 function buildSource(input: PromptCompilationInput) {
   validateInput(input);
 
+  const sceneCharacters = input.sceneCharacters ?? [];
+  const characterIds = new Set(input.characters.map((character) => character.id));
+  for (const relation of sceneCharacters) {
+    if (relation.sceneId !== input.scene.id) {
+      throw new Error(`Scene-character relation targets scene ${relation.sceneId}, expected ${input.scene.id}`);
+    }
+    if (!characterIds.has(relation.characterId)) {
+      throw new Error(`Scene-character relation references unknown character ${relation.characterId}`);
+    }
+  }
+
+  const roles = new Map(
+    sceneCharacters.map((relation) => [relation.characterId, normalizeText(relation.role)]),
+  );
+
   const characters = [...input.characters]
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((character) => ({
       id: character.id,
       name: character.name,
       description: normalizeText(character.description),
+      role: roles.get(character.id),
       metadata: character.metadata,
     }));
 
@@ -122,6 +139,10 @@ function buildSource(input: PromptCompilationInput) {
       metadata: input.scene.metadata,
     },
     characters,
+    sceneCharacters: [...sceneCharacters].sort((a, b) => a.characterId.localeCompare(b.characterId)).map((relation) => ({
+      characterId: relation.characterId,
+      role: normalizeText(relation.role),
+    })),
     references,
     creativeIntent: normalizeText(input.creativeIntent),
   };
@@ -161,6 +182,9 @@ function renderPrompt(source: ReturnType<typeof buildSource>): string {
   } else {
     for (const character of source.characters) {
       lines.push(`- [${character.id}] ${character.name}`);
+      if (character.role) {
+        lines.push(`  Role: ${character.role}`);
+      }
       if (character.description) {
         lines.push(`  Description: ${character.description}`);
       }
