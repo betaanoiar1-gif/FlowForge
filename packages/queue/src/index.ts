@@ -353,5 +353,15 @@ export class ProviderDownloadWorker {
 }
 
 function createDeterministicAssetId(jobId: string, path: string): string {
-  return createHash("sha256").update(`${jobId}\\0${path}`).digest("hex").slice(0, 24);
+  const input = `${jobId}\\0${path}`;
+  let a = 0x811c9dc5;
+  let b = 0x9e3779b9;
+  for (let index = 0; index < input.length; index += 1) {
+    const code = input.charCodeAt(index);
+    a ^= code;
+    a = Math.imul(a, 0x01000193);
+    b ^= code + index;
+    b = Math.imul(b, 0x85ebca6b);
+  }
+  return `${(a >>> 0).toString(16).padStart(8, "0")}${(b >>> 0).toString(16).padStart(8, "0")}`;
 }
