@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { JobStatus, ProviderAdapter } from "@flowforge/core";
 import type { EventPublisher } from "@flowforge/events";
 import { SqliteJobRepository, type QueueEntry } from "@flowforge/storage";
