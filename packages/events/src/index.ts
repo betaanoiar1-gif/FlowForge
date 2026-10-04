@@ -11,7 +11,9 @@ export type FlowForgeEvent =
   | { type: "generation.validating"; at: string; jobId: string; externalId: string }
   | { type: "generation.completed"; at: string; jobId: string; externalId: string; assets: string[] }
   | { type: "generation.cancelled"; at: string; jobId: string; reason?: string }
-  | { type: "generation.failed"; at: string; jobId: string; reason: string }\n  | { type: "generation.retry_requested"; at: string; jobId: string; retryCount: number; maxRetries: number; mode: "submit" | "resume" }\n  | { type: "generation.retry_exhausted"; at: string; jobId: string; retryCount: number; maxRetries: number };
+  | { type: "generation.failed"; at: string; jobId: string; reason: string }
+  | { type: "generation.retry_requested"; at: string; jobId: string; retryCount: number; maxRetries: number; mode: "submit" | "resume" }
+  | { type: "generation.retry_exhausted"; at: string; jobId: string; retryCount: number; maxRetries: number };
 
 export type EventHandler = (event: FlowForgeEvent) => void | Promise<void>;
 
