@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import {
+  assertProjectStatusTransition,
+  assertSceneStatusTransition,
   assertTransition,
   type AssetRecord,
   type AssetVersionRecord,
@@ -69,6 +71,22 @@ export class SqliteJobRepository {
   listProjects(): ProjectRecord[] {
     const rows = this.db.prepare("SELECT * FROM projects ORDER BY created_at, id").all() as ProjectRow[];
     return rows.map(projectFromRow);
+  }
+
+  /** Guarded project status change; the domain transition table is the only rule source. */
+  updateProjectStatus(projectId: string, to: ProjectStatus, now = new Date().toISOString()): ProjectRecord {
+    const transaction = this.db.transaction(() => {
+      const project = this.getProject(projectId);
+      if (!project) throw new Error(`Project not found: ${projectId}`);
+      if (project.status !== to) assertProjectStatusTransition(project.status, to);
+      this.db
+        .prepare("UPDATE projects SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
+        .run(to, now, projectId, project.status);
+      const updated = this.getProject(projectId)!;
+      if (updated.status !== to) throw new Error(`Project ${projectId} status update lost ownership.`);
+      return updated;
+    });
+    return transaction.immediate();
   }
 
   createScene(input: CreateSceneInput): SceneRecord {
@@ -194,6 +212,26 @@ export class SqliteJobRepository {
     return transaction.immediate();
   }
 
+  /**
+   * Guarded scene status change. Callers may move a scene to READY only through the
+   * application service that has already validated derived production readiness; this method
+   * enforces the domain transition table and refuses concurrent overwrites.
+   */
+  updateSceneStatus(sceneId: string, to: SceneStatus, now = new Date().toISOString()): SceneRecord {
+    const transaction = this.db.transaction(() => {
+      const scene = this.getScene(sceneId);
+      if (!scene) throw new Error(`Scene not found: ${sceneId}`);
+      if (scene.status !== to) assertSceneStatusTransition(scene.status, to);
+      this.db
+        .prepare("UPDATE scenes SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
+        .run(to, now, sceneId, scene.status);
+      const updated = this.getScene(sceneId)!;
+      if (updated.status !== to) throw new Error(`Scene ${sceneId} status update lost ownership.`);
+      return updated;
+    });
+    return transaction.immediate();
+  }
+
   private setCurrentSceneVersionInTransaction(sceneId: string, sceneVersionId: string, now: string): void {
     const version = this.getSceneVersion(sceneVersionId);
     if (!version || version.sceneId !== sceneId) {
@@ -206,6 +244,19 @@ export class SqliteJobRepository {
   }
 
   createGenerationJob(input: CreateGenerationJobInput): GenerationJob {
+    return this.createGenerationJobWithCreated(input).job;
+  }
+
+  /**
+   * Identical durable transaction as `createGenerationJob`, additionally reporting whether
+   * this call inserted the job (and its queue item) or reused the job already stored for the
+   * canonical idempotency key. The application layer needs that distinction to tell an
+   * operator "accepted" from "already queued/finished" without a second write.
+   */
+  createGenerationJobWithCreated(input: CreateGenerationJobInput): {
+    job: GenerationJob;
+    created: boolean;
+  } {
     const now = input.now ?? new Date().toISOString();
     const maxAttempts = input.maxAttempts ?? 3;
     if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
@@ -241,7 +292,7 @@ export class SqliteJobRepository {
         if (existingRow.identity_json !== identityJson) {
           throw new Error("Idempotency key collision: stored request identity differs.");
         }
-        return jobFromRow(existingRow);
+        return { job: jobFromRow(existingRow), created: false };
       }
 
       const id = input.id ?? randomUUID();
@@ -283,7 +334,7 @@ export class SqliteJobRepository {
         updatedAt: now,
       });
       this.insertQueueItem(id, input.priority ?? 0, now, now);
-      return this.getGenerationJob(id)!;
+      return { job: this.getGenerationJob(id)!, created: true };
     });
     return transaction.immediate();
   }
@@ -298,8 +349,33 @@ export class SqliteJobRepository {
     return row ? jobFromRow(row) : null;
   }
 
-  listGenerationJobs(): GenerationJob[] {
-    const rows = this.db.prepare("SELECT * FROM generation_jobs ORDER BY created_at, id").all() as JobRow[];
+  listGenerationJobs(filter: GenerationJobFilter = {}): GenerationJob[] {
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (filter.projectId) {
+      clauses.push("project_id = ?");
+      args.push(filter.projectId);
+    }
+    if (filter.sceneId) {
+      clauses.push("scene_id = ?");
+      args.push(filter.sceneId);
+    }
+    if (filter.sceneVersionId) {
+      clauses.push("scene_version_id = ?");
+      args.push(filter.sceneVersionId);
+    }
+    if (filter.status) {
+      clauses.push("status = ?");
+      args.push(filter.status);
+    }
+    if (filter.provider) {
+      clauses.push("provider = ?");
+      args.push(filter.provider);
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(`SELECT * FROM generation_jobs${where} ORDER BY created_at, id`)
+      .all(...args) as JobRow[];
     return rows.map(jobFromRow);
   }
 
@@ -317,10 +393,21 @@ export class SqliteJobRepository {
     return row ? queueItemFromRow(row) : null;
   }
 
-  listQueueItems(): QueueItemRecord[] {
-    const rows = this.db.prepare(`
-      SELECT * FROM queue_items ORDER BY enqueued_at, id
-    `).all() as QueueRow[];
+  listQueueItems(filter: QueueItemFilter = {}): QueueItemRecord[] {
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (filter.status) {
+      clauses.push("status = ?");
+      args.push(filter.status);
+    }
+    if (filter.statuses) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      args.push(...filter.statuses);
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db
+      .prepare(`SELECT * FROM queue_items${where} ORDER BY priority DESC, enqueued_at, id`)
+      .all(...args) as QueueRow[];
     return rows.map(queueItemFromRow);
   }
 
@@ -888,17 +975,11 @@ export class SqliteJobRepository {
         throw new Error("Legacy jobs lack safe attempt history; create a new scene-versioned request instead of retrying one.");
       }
       if (job.attemptCount >= job.maxAttempts) throw new Error(`Generation job ${jobId} exhausted its retry limit.`);
+      const placeholders = UNSAFE_RETRY_ERROR_CLASSES.map(() => "?").join(", ");
       const unsafePriorResult = this.db.prepare(`
         SELECT 1 AS present FROM generation_attempts
-        WHERE generation_job_id = ? AND error_class IN (
-          'UNCERTAIN_PROVIDER_STATE',
-          'PROVIDER_RESULT_RECOVERY_EXHAUSTED',
-          'PROVIDER_RESULT_INVALID',
-          'PROVIDER_DOWNLOAD_EXHAUSTED',
-          'ASSET_PERSISTENCE_EXHAUSTED',
-          'FINALIZATION_RECOVERY_EXHAUSTED'
-        ) LIMIT 1
-      `).get(jobId);
+        WHERE generation_job_id = ? AND error_class IN (${placeholders}) LIMIT 1
+      `).get(jobId, ...UNSAFE_RETRY_ERROR_CLASSES);
       if (unsafePriorResult) {
         throw new Error("This generation has an uncertain or known provider result; create a new scene version instead of resubmitting it.");
       }
@@ -1104,6 +1185,35 @@ export interface CreateSceneVersionInput {
   metadata?: Record<string, unknown>;
   parentVersionId?: string;
   now?: string;
+}
+
+/**
+ * Attempt error classes that prove a prior submission may already have produced provider-side
+ * work or a result the local system could not finalise. A job with any such attempt must not be
+ * resubmitted by retry; it needs a new scene version. Exported so the application layer can
+ * surface the same rule as a typed operator error without duplicating the list.
+ */
+export const UNSAFE_RETRY_ERROR_CLASSES: readonly string[] = Object.freeze([
+  "UNCERTAIN_PROVIDER_STATE",
+  "PROVIDER_RESULT_RECOVERY_EXHAUSTED",
+  "PROVIDER_RESULT_INVALID",
+  "PROVIDER_DOWNLOAD_EXHAUSTED",
+  "ASSET_PERSISTENCE_EXHAUSTED",
+  "FINALIZATION_RECOVERY_EXHAUSTED",
+]);
+
+/** Optional narrowing for the operator read models; omitted fields are not constrained. */
+export interface GenerationJobFilter {
+  projectId?: string;
+  sceneId?: string;
+  sceneVersionId?: string;
+  status?: JobStatus;
+  provider?: string;
+}
+
+export interface QueueItemFilter {
+  status?: QueueItemStatus;
+  statuses?: readonly QueueItemStatus[];
 }
 
 export interface CreateGenerationJobInput {

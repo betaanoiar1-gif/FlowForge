@@ -131,3 +131,7 @@ These checks validate the local SQLite/filesystem/mock path only. Browser/CDP ru
 - The worker accepts one distinct output per generation. Duplicate identical copies are collapsed; multiple distinct outputs fail visibly.
 - Deterministic image dimension support is limited as listed above. There is no semantic/continuity evaluator or production human-review interface.
 - This is local SQLite/filesystem storage with a single-worker execution policy, not a distributed queue or object store.
+
+## Phase 3 operator commands
+
+This document stays the engine-level contract for the flag-only invocation (`flowforge --data-dir … --review approve`), which is unchanged. The same durable path is now also operable command by command through the application services — `project create`, `scene create`, `scene version add`, `generate`, `queue status|run|recover`, `review list|approve|reject|select`, `production scene|ready|project` — with `--json` read models and exit codes documented in [docs/application-services.md](./application-services.md).

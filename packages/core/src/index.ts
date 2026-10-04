@@ -83,6 +83,54 @@ export function transitionJob(
   };
 }
 
+/**
+ * Allowed status transitions for the scene lifecycle. `READY` is only meaningful as a
+ * production gate that the caller has already validated (see the application services);
+ * this table keeps that gate from being bypassed by a direct repository write.
+ * `ARCHIVED` is terminal.
+ */
+export const SCENE_STATUS_TRANSITIONS: Readonly<
+  Record<SceneStatus, readonly SceneStatus[]>
+> = {
+  DRAFT: ["READY", "ARCHIVED"],
+  READY: ["DRAFT", "ARCHIVED"],
+  ARCHIVED: [],
+};
+
+/** Allowed status transitions for a project. `ARCHIVED` is terminal. */
+export const PROJECT_STATUS_TRANSITIONS: Readonly<
+  Record<ProjectStatus, readonly ProjectStatus[]>
+> = {
+  ACTIVE: ["ARCHIVED"],
+  ARCHIVED: [],
+};
+
+export function canTransitionSceneStatus(from: SceneStatus, to: SceneStatus): boolean {
+  return SCENE_STATUS_TRANSITIONS[from].includes(to);
+}
+
+export function assertSceneStatusTransition(from: SceneStatus, to: SceneStatus): void {
+  if (!canTransitionSceneStatus(from, to)) {
+    throw new Error(`Invalid scene status transition: ${from} -> ${to}`);
+  }
+}
+
+export function canTransitionProjectStatus(
+  from: ProjectStatus,
+  to: ProjectStatus,
+): boolean {
+  return PROJECT_STATUS_TRANSITIONS[from].includes(to);
+}
+
+export function assertProjectStatusTransition(
+  from: ProjectStatus,
+  to: ProjectStatus,
+): void {
+  if (!canTransitionProjectStatus(from, to)) {
+    throw new Error(`Invalid project status transition: ${from} -> ${to}`);
+  }
+}
+
 export interface GenerationAttempt {
   id: Id;
   generationJobId: Id;

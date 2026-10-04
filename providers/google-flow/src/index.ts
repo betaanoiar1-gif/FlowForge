@@ -139,7 +139,9 @@ const CORRELATION_METHODS = new Set<CorrelationMethod>([
   "visible-prompt-and-new-media", "visible-prompt-and-active-generation",
 ]);
 
-const GOOGLE_FLOW_CAPABILITIES: ProviderCapabilities = Object.freeze({
+/** Exported so an operator surface can validate a request against declared capabilities without
+ * constructing a provider (and therefore without touching the browser) when it only enqueues. */
+export const GOOGLE_FLOW_CAPABILITIES: ProviderCapabilities = Object.freeze({
   imageGeneration: true,
   videoGeneration: false,
   referenceImages: false,
@@ -152,8 +154,11 @@ const GOOGLE_FLOW_CAPABILITIES: ProviderCapabilities = Object.freeze({
  * Google Flow integration through visible UI only. Its provider-specific selectors are
  * deliberately centralized here; the browser package contains no Flow assumptions.
  */
+/** Exported separately from the class so a caller can identify the provider without a browser. */
+export const GOOGLE_FLOW_PROVIDER_ID = "google-flow";
+
 export class GoogleFlowProvider implements ProviderAdapter {
-  readonly id = "google-flow";
+  readonly id = GOOGLE_FLOW_PROVIDER_ID;
   readonly capabilities = GOOGLE_FLOW_CAPABILITIES;
   readonly rootDir: string;
   private readonly recordsDir: string;

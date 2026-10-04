@@ -1,7 +1,7 @@
 # FlowForge Architecture
 
 - **Baseline audit:** 2026-10-04, commit `f8b7019c1b924bc4a25b6642c5e1dc18e63578ef`.
-- **Current status:** Phase 1 mock-backed slice is implemented; Phase 2 Google Flow browser provider is implemented and fake-tested (2026-10-04).
+- **Current status:** Phase 1 mock-backed slice is implemented; Phase 2 Google Flow browser provider is implemented and fake-tested; Phase 3 adds the application-service layer and the operator CLI on top of them (2026-10-04).
 - **Live-provider status:** no authorized CDP/browser session was available. Real Flow submission, status, correlation, and download are **BLOCKED / NOT RUN** and are not claimed as passing.
 
 ## Executive summary
@@ -14,9 +14,11 @@ Project → SceneVersion → idempotent Job → durable SQLite Queue
         → filesystem Asset → deterministic QC → Review → selected version
 ```
 
-The core, SQLite migrations/repository, queue/worker, filesystem asset store, QC, MockProvider, and CLI remain the proven local path. Phase 2 adds an isolated `GoogleFlowProvider`, generic browser-gateway operations, fake-based gateway/provider/queue tests, and an opt-in live smoke script. The Flow adapter currently implements one visible single-image workflow and reuses the existing queue, asset import, and deterministic QC. It is **not live-validated**: no authorized browser session was available, so real Flow selectors and behavior remain unverified. There is still no product UI/API.
+The core, SQLite migrations/repository, queue/worker, filesystem asset store, QC, MockProvider, and CLI remain the proven local path. Phase 2 adds an isolated `GoogleFlowProvider`, generic browser-gateway operations, fake-based gateway/provider/queue tests, and an opt-in live smoke script. The Flow adapter currently implements one visible single-image workflow and reuses the existing queue, asset import, and deterministic QC. It is **not live-validated**: no authorized browser session was available, so real Flow selectors and behavior remain unverified.
 
-Public research and implementation status are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), runnable Phase 1 details in [docs/vertical-slice.md](./docs/vertical-slice.md), Phase 2 details in [docs/google-flow-provider.md](./docs/google-flow-provider.md), browser mechanics in [docs/browser-gateway.md](./docs/browser-gateway.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
+Phase 3 adds `packages/services` between that durable engine and the operator. The services validate a command, delegate each state change to the single component that already owns it, and project stored state into read models; they own no queue, storage, retry algorithm, provider selection, browser access, or asset-byte handling. `apps/cli` grew subcommands over those services, so the durable engine is operable end to end: project → scene → version → request → queue → provider → asset → QC → review → selection → production-ready scene. There is still no web UI, HTTP API, or worker daemon.
+
+Public research and implementation status are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), runnable Phase 1 details in [docs/vertical-slice.md](./docs/vertical-slice.md), Phase 2 details in [docs/google-flow-provider.md](./docs/google-flow-provider.md), Phase 3 service/operator design and commands in [docs/application-services.md](./docs/application-services.md), browser mechanics in [docs/browser-gateway.md](./docs/browser-gateway.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
 
 ## 1. Current repository map
 
@@ -24,13 +26,14 @@ The pnpm workspace retains TypeScript/ESM, strict checking, and SQLite. It now c
 
 ```text
 apps/
-  cli/                        executable mock-backed vertical-slice command
+  cli/                        operator subcommands plus the mock-backed vertical-slice command
   browser-gateway/            existing local CDP diagnostics and smoke scripts
 
 packages/
   core/                       typed entities, statuses, and provider port
   storage/                    SQLite v3 migrations and transactional repositories
   queue/                      durable claim/lease/recovery worker
+  services/                   application services: validation, orchestration, read models
   assets/                     filesystem asset bytes and streaming SHA-256
   qc/                         deterministic file/MIME/image QC
   browser/                    Playwright/CDP gateway for a user-controlled session
@@ -43,9 +46,10 @@ providers/
 
 | Package | Current responsibility | Important limit |
 | --- | --- | --- |
-| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job status transitions. | No creative-story graph, API schema layer, UI, or workflow-agent tools yet; no Flow/browser concepts. |
-| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
+| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job, scene, and project status transition tables. | No creative-story graph, API schema layer, UI, or workflow-agent tools yet; no Flow/browser concepts. |
+| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection, guarded scene/project status writes, and operator listing filters; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
 | `packages/queue` | Atomic claim, lease heartbeat, expired-lease recovery, same-attempt provider lookup, retry classification, file import/QC, and transactional finalization/ack. | Current worker accepts one distinct output; no background daemon/service. |
+| `packages/services` | Typed application services (`Project`, `Scene`, `Generation`, `Queue`, `Review`, `Production`) over the existing repository/queue/worker; command validation, capability admission, derived production readiness, and operator read models. | Owns no SQL, queue, retry, provider, browser, or asset-byte logic; cannot bypass a repository transition guard. |
 | `packages/assets` | Safe local path construction, atomic file publication, integrity checking, streaming SHA-256, bytes outside SQLite. | No object-store backend or retention/garbage-collection service. |
 | `packages/qc` | Deterministic existence, readability, MIME/signature, size, checksum, and supported image dimensions. | No semantic continuity QC, video/audio probe, or unsupported-format dimension guess. |
 | `providers/mock` | `SUCCESS`, `TRANSIENT_FAILURE`, `PERMANENT_FAILURE`, `TIMEOUT`, and `DUPLICATE_RESULT`; request-key manifests and deterministic local image bytes. | Proves the orchestration contract only; it is not a generative model. |
@@ -111,17 +115,31 @@ QC version `deterministic-v1` validates regular-file existence, readability/non-
 
 A stored asset version receives `PENDING` review. A decision is explicitly `APPROVED` or `REJECTED` and terminal. Selection requires the exact asset version's approval and passing QC; selecting it updates the scene's current scene-version and selected asset-version pointers together. Neither generation nor review approval silently selects a version.
 
-## 6. Deferred work
+## 6. Application services and operator surface (Phase 3)
 
-- No API/web product surface, worker daemon, or production human-review interface.
+`packages/services` is the composition layer, created by `createApplication(repository, { queue, worker, workerProviderId, providers, defaultMaxAttempts, now })`. `ProjectService`, `SceneService`, `GenerationService`, `QueueService`, `ReviewService`, and `ProductionService` each take the same narrow `JobRepository` port (a structural `Pick` of `SqliteJobRepository`), so a service cannot reach a write that has not been reviewed. `QueueService` drives `LocalQueueWorker.runUntilIdle`; nothing in the layer claims, renews, retries, or finalizes work itself.
+
+Command behaviour is deliberately thin: `GenerationService.requestGeneration` checks that the project, scene, and scene version exist and are related, that a provider is registered, and that the request stays inside that provider's declared capabilities, then calls the one repository method that computes the canonical idempotency key and inserts job plus queue item in a single immediate transaction. A repeated command therefore reports `created: false` and reuses the stored job rather than queueing a second submission. Cancellation is delegated to the repository's transition guard, or to the worker (which best-effort contacts its own provider) only when that worker serves the job's provider. Retry pre-checks the same durable evidence used by `retryFailedJob` — including the uncertain-submission block — and then delegates.
+
+Queries are read-only compositions of repository reads: `ProjectOverview`, `SceneListItem`/`SceneDetail`, `GenerationStatus` (job, queue item, attempts, outputs with QC and review, `nextAction`, `safeToRetry`), `QueueStatus`, `ReviewQueueItem`, `SelectionResult`, and `ProductionReadiness`. Production readiness is derived on every call from persisted evidence — current scene version, a succeeded output for that version, no open generation, an explicitly selected asset version, passing deterministic QC, explicit approval, and selection matching the current version — and reported as an ordered list of blocking codes. `READY` is the only new state write; `SceneService` refuses it, and `ProductionService.markReady` sets it only when the derived list is empty, through the guarded `SCENE_STATUS_TRANSITIONS` table in core and `updateSceneStatus` in storage. No new table or migration was needed.
+
+`QueueService` adds one protective rule: before driving the worker it checks that every queued job's provider is one this worker serves, and otherwise refuses with `PROVIDER_COVERAGE_INCOMPLETE`. That prevents an operator from letting the durable worker convert mismatched work into permanent `PROVIDER_MISMATCH` failures.
+
+`apps/cli` routes a leading bare word to the operator commands and keeps the Phase 1 flag-only invocation as the vertical slice. Human and `--json` output come from the same read model; errors carry a stable code, and exit codes are `0` ok, `1` error, `2` usage error, `3` state legitimately blocks the command. Details and the full command list are in [docs/application-services.md](./docs/application-services.md).
+
+## 7. Deferred work
+
+- No web UI or HTTP API product surface, and no worker daemon: review, selection, and readiness are operator commands over the services, and execution is on demand (`queue run`), not a background loop.
 - No live-validated Google Flow behavior: the single-image browser adapter is fake-tested, but real account eligibility, selectors, generation status, result correlation, and download remain untested. Authentication is manual; no provider credentials are stored.
 - No multi-output persistence in one job, object storage, global deduplication, or retention/repair daemon.
 - No creative brief/story/storyboard/Visual DNA graph, agents, audio, timeline, render/export, publishing, or analytics.
 - No durable event/outbox system or distributed queue.
 - No semantic/image similarity evaluator, video/audio codec probe, duration QC, or unsupported image-dimension guess.
 
-These are future phases only when justified; they were not introduced as Phase 1 infrastructure.
+These are future phases only when justified; they were not introduced as Phase 1–3 infrastructure.
 
-## 7. Verification
+## 8. Verification
 
 The Phase 1 validation commands and exact outcomes are recorded in [docs/vertical-slice.md](./docs/vertical-slice.md). Fresh and legacy SQLite migrations were exercised with the real `better-sqlite3` native addon. TypeScript build/typecheck and deterministic tests passed as listed there. The local CLI was run twice to confirm that its repeated success run reuses the same job, asset version, and attempt. Browser/CDP runtime and any live Google Flow behavior remain untested and intentionally unused.
+
+Phase 3 added `packages/services` (18 tests) and `apps/cli` operator tests (5), plus `packages/core` transition tests (2) and three new `packages/storage` tests for guarded status writes, reuse reporting, and operator listing filters. `corepack pnpm build`, `typecheck`, `test` (75 tests), and `vertical-slice` all pass on this checkout; no live Google Flow session was run, so provider-side behavior is still **BLOCKED / NOT RUN**.

@@ -26,15 +26,24 @@ importers:
       '@flowforge/assets':
         specifier: workspace:*
         version: link:../../packages/assets
+      '@flowforge/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
       '@flowforge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@flowforge/provider-google-flow':
+        specifier: workspace:*
+        version: link:../../providers/google-flow
       '@flowforge/provider-mock':
         specifier: workspace:*
         version: link:../../providers/mock
       '@flowforge/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@flowforge/services':
+        specifier: workspace:*
+        version: link:../../packages/services
       '@flowforge/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -107,6 +116,31 @@ importers:
         specifier: workspace:*
         version: link:../storage
     devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/services:
+    dependencies:
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@flowforge/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@flowforge/storage':
+        specifier: workspace:*
+        version: link:../storage
+    devDependencies:
+      '@flowforge/assets':
+        specifier: workspace:*
+        version: link:../assets
+      '@flowforge/provider-mock':
+        specifier: workspace:*
+        version: link:../../providers/mock
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.4

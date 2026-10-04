@@ -1,0 +1,25 @@
+{
+  "name": "@flowforge/services",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@flowforge/core": "workspace:*",
+    "@flowforge/queue": "workspace:*",
+    "@flowforge/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@flowforge/assets": "workspace:*",
+    "@flowforge/provider-mock": "workspace:*",
+    "@types/node": "^26.6.4",
+    "typescript": "^5.9.0"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  }
+}

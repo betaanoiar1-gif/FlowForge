@@ -209,3 +209,39 @@
 - **Decision:** A dispatched Generate click without a verified visible state change raises `FLOW_TIMEOUT` with `submissionUnknown: true`. The existing queue defers the same attempt and performs request-key lookup/status inspection before any recovery decision. FlowForge local cancellation remains supported; the Flow adapter does not click remote Stop/Cancel controls for in-flight requests and returns `FLOW_CANCEL_UNAVAILABLE`.
 - **Reason:** Prevents timeouts from becoming duplicate generations and prevents a cancellation from targeting unrelated user work.
 - **Trade-offs:** A remote operation may continue after local cancellation or remain uncertain until bounded recovery/operator intervention; this does not imply a provider-side failure or cancellation.
+
+## D-024 — Application services orchestrate; they own no infrastructure
+
+- **Date / status:** 2026-10-04 · Accepted and implemented in `packages/services`
+- **Context:** The durable engine was provable but only operable through a hardcoded demo script. A naive "service layer" would duplicate queueing, retries, provider selection, or QC and create a second source of truth.
+- **Options:** Put orchestration inside `packages/queue`; add an HTTP API in front of the repository; or add a narrow composition layer that validates intent, delegates each write to the component that already owns the transition, and projects read models.
+- **Decision:** `packages/services` owns validation, orchestration, and operator read models only. It receives a `JobRepository` port that is a structural `Pick` of the existing repository, calls `createGenerationJobWithCreated` (job + queue item in one transaction) instead of re-implementing enqueueing, and drives `LocalQueueWorker` for execution. It never touches SQL, leases, retry scheduling, provider construction/selection, CDP/Playwright, or asset bytes.
+- **Reason:** Keeps one enforcement point per state machine, so durability, idempotency, and recovery guarantees from Phases 1–2 cannot be bypassed by a convenience API.
+- **Trade-offs:** Operators get CLI JSON rather than a richer product surface; read models recompute from stored rows instead of maintaining materialised state.
+
+## D-025 — Production readiness is derived; `READY` is a guarded transition, not new state
+
+- **Date / status:** 2026-10-04 · Accepted and tested
+- **Context:** The chain ends at a "production-ready scene". A stored boolean would silently drift from the QC, review, selection, and open-job rows that justify it, and a new migration would widen the schema for no gain.
+- **Options:** Add a `production_ready` column; reuse `scenes.status` and accept any writer; or derive readiness from evidence and gate the existing status write.
+- **Decision:** Readiness is computed on every call into an ordered blocker list (`NO_CURRENT_SCENE_VERSION`, `NO_SUCCEEDED_OUTPUT_FOR_VERSION`, `GENERATION_IN_PROGRESS`, `NO_SELECTED_ASSET_VERSION`, `QC_NOT_PASSED`, `REVIEW_NOT_APPROVED`, `SELECTED_VERSION_NOT_CURRENT`, `SCENE_ARCHIVED`). `READY` is set only by `ProductionService.markReady` after that list is empty, using the new `SCENE_STATUS_TRANSITIONS`/`PROJECT_STATUS_TRANSITIONS` tables in core which `updateSceneStatus`/`updateProjectStatus` re-check in their own transaction. `SceneService` deliberately refuses `READY`, and archived scenes/projects are terminal. No migration was required because `status` columns already exist.
+- **Reason:** The gate can never disagree with its evidence, and the transition rule stays in the domain layer where the job state machine already lives.
+- **Trade-offs:** Readiness costs a few indexed reads per scene; recomputation is preferred over cache invalidation at this scale.
+
+## D-026 — Refuse to drive the worker for providers it cannot serve
+
+- **Date / status:** 2026-10-04 · Accepted and tested
+- **Context:** `LocalQueueWorker` serves exactly one provider and permanently fails any claimed job belonging to another (`PROVIDER_MISMATCH` is non-retryable). A mixed queue plus `queue run` would destroy operator work by accident.
+- **Options:** Let the worker fail mismatched jobs; add per-provider routing/parallel workers to the queue; or check coverage before execution in the application layer.
+- **Decision:** `QueueService` verifies every `QUEUED` job's provider against the served provider set before each run and throws `PROVIDER_COVERAGE_INCOMPLETE` (exit code 3) without consuming an attempt. `--ignore-provider-coverage` remains available for a deliberate, reviewed override, and queuing work for an unwired provider requires the explicit `allowUnconfiguredProvider` flag.
+- **Reason:** Keeps Phase 1 queue semantics untouched while making the destructive combination impossible by default.
+- **Trade-offs:** One extra queue read per run; a mixed queue must be drained provider by provider rather than in one command.
+
+## D-027 — Operator surface is a typed CLI over shared read models
+
+- **Date / status:** 2026-10-04 · Accepted and tested
+- **Context:** An operable system needs status, review, and selection actions now, but a web UI, HTTP API, or daemon would add auth, transport, and concurrency surface before the live provider is validated.
+- **Options:** Ship a web review UI/API; run a background worker daemon; or expose the services as CLI subcommands with serialisable read models.
+- **Decision:** `apps/cli` gains subcommands (`project`, `scene`, `generate`, `status`, `queue`, `cancel`, `retry`, `review`, `production`, `provider`) that call only the services. Human and `--json` output are the same projections; errors carry stable codes (`READINESS_NOT_SATISFIED`, `PROVIDER_COVERAGE_INCOMPLETE`, `RETRY_BLOCKED_UNSAFE_STATE`, …) and exit codes `0/1/2/3`. The flag-only Phase 1 invocation still runs the vertical slice unchanged. Execution is on demand, never a daemon; a future UI must consume these read models and persisted IDs.
+- **Reason:** Delivers operator leverage with no new trust boundary, keeps deterministic CI (no browser, no Google account), and preserves the documented Phase 1 contract.
+- **Trade-offs:** No graphical review; JSON read models are the contract for the next surface.

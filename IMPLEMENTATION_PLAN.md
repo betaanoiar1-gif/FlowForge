@@ -1,7 +1,7 @@
 # FlowForge Implementation Plan
 
-- **Current stage:** Phase 2 provider implementation and fake-based verification are complete (2026-10-04); live Flow validation is **BLOCKED / NOT RUN** without an authorized CDP session.
-- **Next validation milestone:** run the separate opt-in live smoke on a user-authorized, manually authenticated Flow session; stop if UI correlation is ambiguous.
+- **Current stage:** Phase 2 provider implementation and fake-based verification are complete, and Phase 3 (application services plus operator CLI) is implemented and tested (2026-10-04); live Flow validation is **BLOCKED / NOT RUN** without an authorized CDP session.
+- **Next validation milestone:** run the separate opt-in live smoke on a user-authorized, manually authenticated Flow session, then drive that session through the operator commands (`generate --provider google-flow` → `queue run`); stop if UI correlation is ambiguous.
 - **Provider rule:** Google Flow remains replaceable and isolated. MockProvider remains the deterministic local/CI provider; neither queue nor domain is replaced.
 
 ## Phase 1 slice delivered
@@ -59,6 +59,23 @@ The Phase 2 code path is implemented behind the existing `GenerationProvider` an
 
 **Code gate:** build/typecheck and fake tests pass. **Live gate:** BLOCKED / NOT RUN because no authorized browser session was available; no claim of real Flow submission, correlation, or download success is made. See [docs/google-flow-provider.md](./docs/google-flow-provider.md).
 
+## Phase 3 — Application services and operator surface
+
+`packages/services` sits between the durable engine and the operator and covers the chain `Project → Scene → Generation Request → Generation Job → Durable Queue → Provider → Asset → QC → Review → Version Selection → Production-ready Scene`. Phase 0/1/2 systems are reused, not replaced: no second queue, retry engine, storage layer, QC implementation, provider selector, or browser automation exists in this layer.
+
+### Phase 3 acceptance criteria
+
+1. **Narrow application layer:** services own validation, orchestration, and read models only. Every write goes through the existing repository method that already owns the transition (job creation and enqueue stay one transaction), and execution goes through `LocalQueueWorker`. No browser, CDP, selector, retry-algorithm, or asset-byte code appears in the layer.
+2. **Idempotent requests:** `GenerationService.requestGeneration` validates scope and provider capabilities, then creates or reuses the durable job and reports `created`/`reusedExistingJob`. A repeated command never double-enqueues; prompts stay on immutable scene versions rather than on the request.
+3. **Capability admission:** a request is refused before it is queued when the selected provider's declared capabilities cannot satisfy it (video, batch, frames, references). Providers not registered in this process are refused unless the operator explicitly opts into `allowUnconfiguredProvider`.
+4. **State transitions:** job transitions stay owned by core's `JOB_TRANSITIONS`. Scene status transitions use the new `SCENE_STATUS_TRANSITIONS` table, are enforced again in storage, and `READY` is reachable only through the readiness gate. Project archival is guarded by `PROJECT_STATUS_TRANSITIONS` and refuses while work is open. No new table or migration was added.
+5. **Derived production readiness:** readiness is computed from persisted evidence on every call (current version, succeeded output, no open generation, explicit selection, passing QC, explicit approval) and reported as blocking codes, so there is no stored flag that can drift from its justification.
+6. **Persistence/recovery respected:** leases, same-attempt recovery, `UNCERTAIN_PROVIDER_STATE` no-auto-retry, and the recovery manifest remain Phase 1/2 behaviour; the service layer only drives and reports them. Retry is offered only when the durable evidence permits it.
+7. **Operator surface and read models:** `apps/cli` exposes project/scene/version/generate/status/queue/cancel/retry/review/select/production/provider commands. Human and `--json` output are projections of the same read models, and errors carry stable codes with exit codes `0/1/2/3`.
+8. **Safety and scope:** authentication stays manual; the CLI attaches to the operator's browser session only when execution with `--provider google-flow` is requested, redacts the endpoint in messages, and never logs page content or secrets. No web UI, HTTP API, daemon, planner, agent, publishing, analytics, or video pipeline was introduced.
+
+**Gate:** build, typecheck, `corepack pnpm test` (75 tests, deterministic, no browser or Google account), and `corepack pnpm vertical-slice` all pass. Live Google Flow execution through the new commands is **NOT RUN**: it requires the user's authorized session.
+
 ## Remaining milestones
 
 | Phase | Scope | Exit gate |
@@ -66,7 +83,7 @@ The Phase 2 code path is implemented behind the existing `GenerationProvider` an
 | **0 — Audit** | Inspect the checkout; document current system, public feature research, gaps, decisions, and the first slice. | **Complete.** See [ARCHITECTURE.md](./ARCHITECTURE.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md). |
 | **1 — Durable mock-backed vertical slice** | Project/scene versions, stable logical idempotency, schema migrations, durable queue/leases/attempts, MockProvider, asset store, deterministic QC, review/selection, CLI and tests. | **Complete.** Validation commands and constraints are recorded below and in [docs/vertical-slice.md](./docs/vertical-slice.md). |
 | **2 — Google Flow browser provider** | Visible-UI single-image provider behind the existing provider port, gateway hardening, durable same-attempt recovery, safe correlation/download, typed errors, and fake tests. | **Code complete and fake-tested.** Live gate is **BLOCKED / NOT RUN** until the opt-in smoke runs on a user-authorized session. |
-| **3 — Application services and operator UX** | Add narrowly scoped use-case services and, only when needed, a review/queue interface over the proven repository boundaries. | UI decisions use persisted IDs and cannot mutate storage directly; selection/review remains explicit. |
+| **3 — Application services and operator UX** | Narrow use-case services (`packages/services`) over the proven repository boundaries plus an operator CLI for project/scene/generation/queue/review/production commands and read models. | **Complete.** Commands use persisted IDs and cannot mutate storage directly; review/selection stay explicit; readiness is derived; no UI/HTTP API/daemon. See [docs/application-services.md](./docs/application-services.md). |
 | **4 — Creative intelligence** | Add structured brief/story/story-spine/storyboard planning, shots, prompts, character/world profiles, Visual DNA, and continuity constraints. AI adapters return schema-validated data through explicit application tools. | Deterministic fixtures validate planner schemas, IDs, references, and scene-level regeneration. |
 | **5 — Rich review and QC** | Add richer review categories/feedback and optional deterministic media probes or validated semantic checks. Keep unsupported metrics `NOT_EVALUATED`. | Evidence links to persisted records; no semantic score without a validated evaluator and reviewable evidence. |
 | **6 — Media pipeline** | Add isolated audio/narration/music/caption/timeline/render/export jobs. Preserve source asset/version provenance and support requested output formats. | Reproducible render fixture and format-specific QC trace to source scene versions, generations, assets, and reviews. |
@@ -84,6 +101,7 @@ The Phase 2 code path is implemented behind the existing `GenerationProvider` an
 - Keep state and failure visible. Redact secrets, cookies, tokens, and private browser content; never bypass authentication, CAPTCHA, security controls, or provider restrictions.
 - Start with a single local worker. Do not add distributed infrastructure or concurrency without a demonstrated requirement and tested provider limits.
 - Keep live provider tests explicit, opt-in, and separate from deterministic CI.
+- The application layer may only orchestrate: a new capability needs the component that owns its state, not a second implementation in `packages/services`.
 
 ## Phase 1 validation record
 

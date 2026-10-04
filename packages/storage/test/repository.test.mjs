@@ -75,3 +75,76 @@ test("expired queue leases resume the same attempt and fence the stale worker", 
     repository.close();
   }
 });
+
+test("scene and project status writes stay guarded by the domain transition tables", () => {
+  const repository = new SqliteJobRepository(":memory:");
+  try {
+    const { scene, project } = seed(repository);
+    assert.equal(repository.updateSceneStatus(scene.id, "READY").status, "READY");
+    assert.equal(repository.updateSceneStatus(scene.id, "READY").status, "READY", "an identical status write is a no-op, not an error");
+    assert.equal(repository.updateSceneStatus(scene.id, "DRAFT").status, "DRAFT");
+    assert.equal(repository.updateSceneStatus(scene.id, "ARCHIVED").status, "ARCHIVED");
+    assert.throws(() => repository.updateSceneStatus(scene.id, "READY"), /Invalid scene status transition: ARCHIVED -> READY/);
+    assert.throws(() => repository.updateSceneStatus("missing-scene", "READY"), /Scene not found/);
+
+    assert.equal(repository.updateProjectStatus(project.id, "ARCHIVED").status, "ARCHIVED");
+    assert.equal(repository.updateProjectStatus(project.id, "ARCHIVED").status, "ARCHIVED");
+    assert.throws(() => repository.updateProjectStatus(project.id, "ACTIVE"), /Invalid project status transition: ARCHIVED -> ACTIVE/);
+  } finally {
+    repository.close();
+  }
+});
+
+test("job creation reports whether the durable request was newly created or reused", () => {
+  const repository = new SqliteJobRepository(":memory:");
+  try {
+    const { job, project, scene, version } = seed(repository);
+    const identity = {
+      projectId: project.id,
+      sceneId: scene.id,
+      sceneVersionId: version.id,
+      provider: "mock",
+    };
+    const reused = repository.createGenerationJobWithCreated(identity);
+    assert.equal(reused.created, false);
+    assert.equal(reused.job.id, job.id);
+    assert.equal(repository.queueSize(), 1, "a reused request must not enqueue a second item");
+
+    const fresh = repository.createGenerationJobWithCreated({ ...identity, provider: "other" });
+    assert.equal(fresh.created, true);
+    assert.notEqual(fresh.job.id, job.id);
+    assert.equal(fresh.job.status, "QUEUED");
+    assert.equal(repository.getQueueItemByJob(fresh.job.id).status, "QUEUED");
+  } finally {
+    repository.close();
+  }
+});
+
+test("operator listings narrow by durable identity without loading the whole table", () => {
+  const repository = new SqliteJobRepository(":memory:");
+  try {
+    const { project, scene, version, job } = seed(repository);
+    const other = repository.createProject({ id: "project-2", name: "Other" });
+    const otherScene = repository.createScene({ id: "scene-2", projectId: other.id, sceneNumber: 1, title: "Other scene" });
+    const otherVersion = repository.createSceneVersion({ sceneId: otherScene.id, prompt: "Other prompt" });
+    const flowJob = repository.createGenerationJob({
+      projectId: other.id,
+      sceneId: otherScene.id,
+      sceneVersionId: otherVersion.id,
+      provider: "google-flow",
+      priority: 5,
+    });
+
+    assert.deepEqual(repository.listGenerationJobs({ projectId: project.id }).map((entry) => entry.id), [job.id]);
+    assert.deepEqual(repository.listGenerationJobs({ projectId: other.id, sceneId: otherScene.id }).map((entry) => entry.id), [flowJob.id]);
+    assert.deepEqual(repository.listGenerationJobs({ provider: "google-flow", status: "QUEUED" }).map((entry) => entry.id), [flowJob.id]);
+    assert.deepEqual(repository.listGenerationJobs({ sceneVersionId: version.id, status: "SUCCEEDED" }), []);
+
+    const queued = repository.listQueueItems({ statuses: ["QUEUED"] });
+    assert.equal(queued.length, 2);
+    assert.equal(queued[0].generationJobId, flowJob.id, "priority ordering matches how work is claimed");
+    assert.deepEqual(repository.listQueueItems({ status: "ACKED" }), []);
+  } finally {
+    repository.close();
+  }
+});
