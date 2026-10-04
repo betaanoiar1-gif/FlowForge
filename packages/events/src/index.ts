@@ -6,6 +6,7 @@ export type FlowForgeEvent =
   | { type: "generation.preparing"; at: string; jobId: string }
   | { type: "generation.submitting"; at: string; jobId: string }
   | { type: "generation.generating"; at: string; jobId: string; externalId: string }
+  | { type: "generation.verifying"; at: string; jobId: string; externalId: string }
   | { type: "generation.failed"; at: string; jobId: string; reason: string };
 
 export type EventHandler = (event: FlowForgeEvent) => void | Promise<void>;
