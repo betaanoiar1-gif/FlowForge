@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.15.9",
   "scripts": {
-    "dev": "pnpm --parallel --filter ./apps/* dev",
-    "build": "pnpm -r build",
-    "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "dev": "corepack pnpm --parallel --filter ./apps/* dev",
+    "build": "corepack pnpm -r --if-present build",
+    "test": "corepack pnpm -r --if-present build && corepack pnpm -r --if-present test",
+    "typecheck": "corepack pnpm -r --if-present build && corepack pnpm -r --if-present typecheck",
+    "vertical-slice": "corepack pnpm --filter @flowforge/cli... build && corepack pnpm --filter @flowforge/cli vertical-slice"
   }
 }

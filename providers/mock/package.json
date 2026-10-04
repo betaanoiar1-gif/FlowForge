@@ -1,18 +1,14 @@
 {
-  "name": "@flowforge/queue",
+  "name": "@flowforge/provider-mock",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@flowforge/assets": "workspace:*",
-    "@flowforge/core": "workspace:*",
-    "@flowforge/qc": "workspace:*",
-    "@flowforge/storage": "workspace:*"
+    "@flowforge/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

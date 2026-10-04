@@ -21,6 +21,40 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  apps/cli:
+    dependencies:
+      '@flowforge/assets':
+        specifier: workspace:*
+        version: link:../../packages/assets
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@flowforge/provider-mock':
+        specifier: workspace:*
+        version: link:../../providers/mock
+      '@flowforge/queue':
+        specifier: workspace:*
+        version: link:../../packages/queue
+      '@flowforge/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/assets:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
   packages/browser:
     dependencies:
       playwright-core:
@@ -39,15 +73,40 @@ importers:
 
   packages/events: {}
 
-  packages/queue:
+  packages/qc:
     dependencies:
+      '@flowforge/assets':
+        specifier: workspace:*
+        version: link:../assets
       '@flowforge/core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/queue:
+    dependencies:
+      '@flowforge/assets':
+        specifier: workspace:*
+        version: link:../assets
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@flowforge/qc':
+        specifier: workspace:*
+        version: link:../qc
       '@flowforge/storage':
         specifier: workspace:*
         version: link:../storage
     devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -73,6 +132,19 @@ importers:
       '@flowforge/browser':
         specifier: workspace:*
         version: link:../../packages/browser
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  providers/mock:
+    dependencies:
       '@flowforge/core':
         specifier: workspace:*
         version: link:../../packages/core

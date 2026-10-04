@@ -1,5 +1,5 @@
 {
-  "name": "@flowforge/queue",
+  "name": "@flowforge/qc",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,9 +10,7 @@
   },
   "dependencies": {
     "@flowforge/assets": "workspace:*",
-    "@flowforge/core": "workspace:*",
-    "@flowforge/qc": "workspace:*",
-    "@flowforge/storage": "workspace:*"
+    "@flowforge/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

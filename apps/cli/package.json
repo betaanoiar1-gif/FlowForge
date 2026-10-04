@@ -1,24 +1,25 @@
 {
-  "name": "@flowforge/queue",
+  "name": "@flowforge/cli",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "flowforge": "./dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "vertical-slice": "node dist/index.js --data-dir ../../.flowforge/vertical-slice --review approve"
   },
   "dependencies": {
     "@flowforge/assets": "workspace:*",
     "@flowforge/core": "workspace:*",
-    "@flowforge/qc": "workspace:*",
+    "@flowforge/provider-mock": "workspace:*",
+    "@flowforge/queue": "workspace:*",
     "@flowforge/storage": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "typescript": "^5.9.0"
-  },
-  "exports": {
-    ".": "./dist/index.js"
   }
 }
