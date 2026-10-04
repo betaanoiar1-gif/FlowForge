@@ -352,6 +352,75 @@ export class ProviderDownloadWorker {
   }
 }
 
+
+export interface ProviderValidationResult {
+  jobId: string;
+  status: JobStatus;
+  assets: string[];
+}
+
+export class ProviderValidationWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  async runOnce(jobId: string, assets: string[]): Promise<ProviderValidationResult | null> {
+    const job = this.repository.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+
+    if (job.status !== "VALIDATING") {
+      throw new Error(`Validation worker cannot start job ${job.id} from ${job.status}`);
+    }
+
+    if (!job.externalId) {
+      throw new Error(`Generation job ${job.id} has no externalId`);
+    }
+
+    const provider = this.resolveProvider(job.request.provider);
+    if (!provider) {
+      const reason = `Provider not registered: ${job.request.provider}`;
+      this.repository.transition(job.id, "FAILED", reason);
+      this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason });
+      return null;
+    }
+
+    try {
+      if (!Array.isArray(assets) || assets.length === 0 || assets.some((path) => typeof path !== "string" || !path.trim())) {
+        throw new Error(`Validation failed: job ${job.id} has no valid assets`);
+      }
+
+      for (const path of assets) {
+        const matches = this.repository.listProjectAssets(job.request.projectId)
+          .filter((asset) => asset.jobId === job.id && asset.path === path);
+        if (matches.length === 0) {
+          throw new Error(`Validation failed: asset is not registered for job ${job.id}: ${path}`);
+        }
+      }
+
+      const updated = this.repository.transition(job.id, "COMPLETED");
+      this.events?.publish({
+        type: "generation.completed",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        externalId: job.externalId,
+        assets: [...assets],
+      });
+
+      return { jobId: updated.id, status: updated.status, assets: [...assets] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const current = this.repository.get(job.id);
+      if (current && current.status !== "FAILED") {
+        this.repository.transition(job.id, "FAILED", message);
+        this.events?.publish({ type: "generation.failed", at: new Date().toISOString(), jobId: job.id, reason: message });
+      }
+      return null;
+    }
+  }
+}
+
 function createDeterministicAssetId(jobId: string, path: string): string {
   const input = `${jobId}\\0${path}`;
   let a = 0x811c9dc5;
