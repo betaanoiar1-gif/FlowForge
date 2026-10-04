@@ -9,9 +9,11 @@
     "test": "node --import tsx test/prompt-compiler.test.ts"
   },
   "dependencies": {
-    "@flowforge/core": "workspace:*"
+    "@flowforge/core": "workspace:*",
+    "better-sqlite3": "^12.6.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
