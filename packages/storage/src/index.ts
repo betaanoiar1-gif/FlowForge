@@ -158,7 +158,7 @@ export class SqliteJobRepository {
   transition(id: string, to: JobStatus, error?: string): GenerationJob {
     const current = this.get(id);
     if (!current) throw new Error(`Generation job not found: ${id}`);
-    assertTransition(current.status, to);
+    assertTransition(current.status, to, current.externalId);
 
     const updatedAt = new Date().toISOString();
     this.db.prepare(
