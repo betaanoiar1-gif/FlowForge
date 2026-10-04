@@ -51,8 +51,11 @@ const baseRequest = {
   assert.deepEqual(retry, { jobId: "job-no-external", status: "GENERATING", retryCount: 1, maxRetries: 3, mode: "submit" });
   assert.equal(submitCalls, 2);
   assert.equal(repository.get("job-no-external")?.externalId, "external-1");
-  assert.equal(events.at(-1)?.type, "generation.retry_requested");
-  assert.equal(events.at(-1)?.mode, "submit");
+  const submitRetryEvent = events.filter((event) =>
+    event.type === "generation.retry_requested" && event.jobId === "job-no-external"
+  ).at(-1);
+  assert.equal(submitRetryEvent?.type, "generation.retry_requested");
+  assert.equal(submitRetryEvent?.mode, "submit");
   repository.close();
   console.log("[Phase 1J] failed job without externalId -> safe resubmission: PASS");
 }
@@ -89,8 +92,11 @@ const baseRequest = {
   assert.equal(submitCalls, 1);
   assert.equal(completionCalls, 2);
   assert.equal(repository.get("job-external")?.status, "VERIFYING");
-  assert.equal(events.at(-1)?.type, "generation.retry_requested");
-  assert.equal(events.at(-1)?.mode, "resume");
+  const resumeRetryEvent = events.filter((event) =>
+    event.type === "generation.retry_requested" && event.jobId === "job-external"
+  ).at(-1);
+  assert.equal(resumeRetryEvent?.type, "generation.retry_requested");
+  assert.equal(resumeRetryEvent?.mode, "resume");
 
   assert.throws(() => queue.enqueue("job-external"), /externalId/);
   repository.close();
@@ -114,11 +120,11 @@ const baseRequest = {
   repository.create({ ...baseRequest, provider: "budget-provider" }, "job-budget");
   queue.enqueue("job-budget");
   await new ProviderExecutionWorker(repository, queue, () => provider).runOnce();
-  await assert.rejects(
-    () => new GenerationRetryWorker(repository, queue, () => provider, publisher).retryOnce("job-budget", 1),
-    /still failing/,
-  );
+  const failedRetry = await new GenerationRetryWorker(repository, queue, () => provider, publisher).retryOnce("job-budget", 1);
+  assert.equal(failedRetry, null);
+  assert.equal(repository.get("job-budget")?.status, "FAILED");
   assert.equal(repository.getRetryState("job-budget").retryCount, 1);
+  assert.equal(submitCalls, 2);
   repository.close();
 
   const reopened = new SqliteJobRepository(dbPath);
