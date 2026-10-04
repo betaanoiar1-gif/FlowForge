@@ -98,7 +98,13 @@ assert.equal(failedPersisted?.error, "synthetic provider failure");
 console.log("[Phase 1C] provider failure persistence: PASS");
 
 queue.enqueue("job-2");
-const retryResult = await worker.runOnce();
+const recoveredProvider = { ...provider, id: "failing-provider" };
+const retryWorker = new ProviderExecutionWorker(
+  repository,
+  queue,
+  (providerId) => providerId === recoveredProvider.id ? recoveredProvider : undefined,
+);
+const retryResult = await retryWorker.runOnce();
 assert.deepEqual(retryResult, {
   jobId: "job-2",
   status: "GENERATING",
