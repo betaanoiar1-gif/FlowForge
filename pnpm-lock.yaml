@@ -42,6 +42,12 @@ importers:
       '@flowforge/core':
         specifier: workspace:*
         version: link:../core
+      '@flowforge/queue':
+        specifier: workspace:*
+        version: link:../queue
+      '@flowforge/storage':
+        specifier: workspace:*
+        version: link:../storage
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.11.1
