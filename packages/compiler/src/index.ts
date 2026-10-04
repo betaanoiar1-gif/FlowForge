@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import Database from "better-sqlite3";
 import type { CharacterRecord, ProjectRecord, SceneRecord } from "@flowforge/core";
 
 export const PROMPT_COMPILER_VERSION = "1.0.0";
@@ -181,6 +182,107 @@ function renderPrompt(source: ReturnType<typeof buildSource>): string {
   }
 
   return lines.join("\n");
+}
+
+export class PromptCompilationStore {
+  private readonly db: Database.Database;
+
+  constructor(path: string) {
+    this.db = new Database(path);
+    this.db.pragma("journal_mode = WAL");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS compiled_prompts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        scene_id TEXT NOT NULL,
+        compiler_version TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        prompt TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        deterministic_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_compiled_prompts_scene
+        ON compiled_prompts(scene_id);
+      CREATE INDEX IF NOT EXISTS idx_compiled_prompts_source
+        ON compiled_prompts(source_fingerprint);
+    `);
+  }
+
+  save(compiled: CompiledPrompt): CompiledPrompt {
+    const createdAt = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO compiled_prompts (
+        id, project_id, scene_id, compiler_version, schema_version,
+        prompt, metadata_json, source_fingerprint, deterministic_hash, created_at
+      ) VALUES (
+        @id, @projectId, @sceneId, @compilerVersion, @schemaVersion,
+        @prompt, @metadata, @sourceFingerprint, @deterministicHash, @createdAt
+      )
+      ON CONFLICT(deterministic_hash) DO UPDATE SET
+        prompt = excluded.prompt,
+        metadata_json = excluded.metadata_json
+    `).run({
+      id: compiled.id,
+      projectId: compiled.projectId,
+      sceneId: compiled.sceneId,
+      compilerVersion: compiled.compilerVersion,
+      schemaVersion: compiled.schemaVersion,
+      prompt: compiled.prompt,
+      metadata: JSON.stringify(compiled.metadata),
+      sourceFingerprint: compiled.sourceFingerprint,
+      deterministicHash: compiled.deterministicHash,
+      createdAt,
+    });
+
+    return this.getByHash(compiled.deterministicHash)!;
+  }
+
+  get(id: string): CompiledPrompt | null {
+    const row = this.db.prepare(
+      "SELECT * FROM compiled_prompts WHERE id = ?",
+    ).get(id) as CompiledPromptRow | undefined;
+    return row ? compiledPromptFromRow(row) : null;
+  }
+
+  getByHash(hash: string): CompiledPrompt | null {
+    const row = this.db.prepare(
+      "SELECT * FROM compiled_prompts WHERE deterministic_hash = ?",
+    ).get(hash) as CompiledPromptRow | undefined;
+    return row ? compiledPromptFromRow(row) : null;
+  }
+
+  close(): void {
+    this.db.close();
+  }
+}
+
+interface CompiledPromptRow {
+  id: string;
+  project_id: string;
+  scene_id: string;
+  compiler_version: string;
+  schema_version: number;
+  prompt: string;
+  metadata_json: string;
+  source_fingerprint: string;
+  deterministic_hash: string;
+}
+
+function compiledPromptFromRow(row: CompiledPromptRow): CompiledPrompt {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sceneId: row.scene_id,
+    compilerVersion: row.compiler_version,
+    schemaVersion: row.schema_version,
+    prompt: row.prompt,
+    metadata: JSON.parse(row.metadata_json) as CompiledPrompt["metadata"],
+    sourceFingerprint: row.source_fingerprint,
+    deterministicHash: row.deterministic_hash,
+  };
 }
 
 export class PromptCompiler {
