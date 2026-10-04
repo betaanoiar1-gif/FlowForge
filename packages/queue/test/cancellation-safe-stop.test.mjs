@@ -55,7 +55,7 @@ const publisher = { publish(event) { events.push(event); } };
   console.log("[Phase 1I] queued job cancellation + queue removal: PASS");
 }
 
-// Restart recovery preserves CANCELLED and cannot resume it.
+// Every non-terminal execution stage can be safely cancelled.\n{\n  const cancellable = ["PREPARING", "SUBMITTING", "GENERATING", "VERIFYING", "DOWNLOADING", "VALIDATING"];\n  for (const status of cancellable) {\n    const repository = new SqliteJobRepository(dbPath);\n    const id = `job-cancel-${status.toLowerCase()}`;\n    repository.create({ projectId: "project-1", sceneId: "scene-1", provider: "fake-provider", prompt: "FLOWFORGE STAGE CANCEL TEST — DO NOT GENERATE", references: [] }, id);\n    for (const next of ["PREPARING", "SUBMITTING", "GENERATING", "VERIFYING", "DOWNLOADING", "VALIDATING"]) {\n      if (next === status) break;\n      repository.transition(id, next);\n    }\n    assert.equal(new GenerationCancellationWorker(repository, publisher).cancel(id).status, "CANCELLED");\n    repository.close();\n  }\n  console.log("[Phase 1I] all cancellable execution stages: PASS");\n}\n\n// Restart recovery preserves CANCELLED and cannot resume it.
 {
   const repository = new SqliteJobRepository(dbPath);
   repository.create({
