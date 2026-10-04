@@ -422,6 +422,28 @@ export class ProviderValidationWorker {
 }
 
 
+export class GenerationCancellationWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  cancel(jobId: string, reason?: string): WorkerResult {
+    const job = this.repository.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+    const updated = this.repository.cancel(jobId);
+    if (updated.status === "CANCELLED" && job.status !== "CANCELLED") {
+      this.events?.publish({
+        type: "generation.cancelled",
+        at: new Date().toISOString(),
+        jobId,
+        ...(reason ? { reason } : {}),
+      });
+    }
+    return { jobId: updated.id, status: updated.status };
+  }
+}
+
 export interface RecoveryResult {
   jobId: string;
   status: JobStatus;
