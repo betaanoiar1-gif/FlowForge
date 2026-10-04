@@ -10,6 +10,7 @@ export type FlowForgeEvent =
   | { type: "generation.downloading"; at: string; jobId: string; externalId: string }
   | { type: "generation.validating"; at: string; jobId: string; externalId: string }
   | { type: "generation.completed"; at: string; jobId: string; externalId: string; assets: string[] }
+  | { type: "generation.cancelled"; at: string; jobId: string; reason?: string }
   | { type: "generation.failed"; at: string; jobId: string; reason: string };
 
 export type EventHandler = (event: FlowForgeEvent) => void | Promise<void>;
