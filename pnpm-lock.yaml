@@ -66,6 +66,9 @@ importers:
       '@flowforge/core':
         specifier: workspace:*
         version: link:../core
+      '@flowforge/events':
+        specifier: workspace:*
+        version: link:../events
       '@flowforge/storage':
         specifier: workspace:*
         version: link:../storage
