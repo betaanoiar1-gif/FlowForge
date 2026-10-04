@@ -1,7 +1,7 @@
 # FlowForge Architecture
 
 - **Baseline audit:** 2026-10-04, commit `f8b7019c1b924bc4a25b6642c5e1dc18e63578ef`.
-- **Current status:** Phase 1 mock-backed slice is implemented; Phase 2 Google Flow browser provider is implemented and fake-tested; Phase 3 adds the application-service layer and the operator CLI on top of them (2026-10-04).
+- **Current status:** Phase 1 mock-backed slice is implemented; Phase 2 Google Flow browser provider is implemented and fake-tested; Phase 3 adds the application-service layer and the operator CLI on top of them; Phase 4A adds the creative planning domain (briefs, versioned production plans, story, cast, worlds, Visual DNA, scene plans, generation specs, deterministic validation, capability gating) above that spine without touching it (2026-10-04).
 - **Live-provider status:** no authorized CDP/browser session was available. Real Flow submission, status, correlation, and download are **BLOCKED / NOT RUN** and are not claimed as passing.
 
 ## Executive summary
@@ -16,9 +16,20 @@ Project → SceneVersion → idempotent Job → durable SQLite Queue
 
 The core, SQLite migrations/repository, queue/worker, filesystem asset store, QC, MockProvider, and CLI remain the proven local path. Phase 2 adds an isolated `GoogleFlowProvider`, generic browser-gateway operations, fake-based gateway/provider/queue tests, and an opt-in live smoke script. The Flow adapter currently implements one visible single-image workflow and reuses the existing queue, asset import, and deterministic QC. It is **not live-validated**: no authorized browser session was available, so real Flow selectors and behavior remain unverified.
 
+Phase 4A adds a **planning domain**, not an AI planner. Creative intent becomes durable and versioned:
+`CreativeBrief` snapshots feed a `ProductionPlan` whose numbered versions carry a story, cast, world and
+Visual DNA references, ordered `ScenePlan`s, and provider-neutral `GenerationSpec`s. Each version walks an
+explicit `DRAFT → VALIDATED → APPROVED → EXECUTABLE` lifecycle decided by a pure deterministic validator
+and by the *existing* provider capability model, and approval is bound to a content hash so edited content
+can never be approved by old evidence. Planning never creates a scene, a job, a queue item, or a provider
+call: `plan preview` derives the exact Phase 3 commands a later phase would issue. Phase 4B (deterministic
+planner engine) and Phase 4C (optional AI planner adapter) are the only layers that may *author* this data,
+and both will consume the same contracts. The model, lifecycle, validation rules, persistence, and CLI are
+documented in [docs/planning-domain.md](./docs/planning-domain.md).
+
 Phase 3 adds `packages/services` between that durable engine and the operator. The services validate a command, delegate each state change to the single component that already owns it, and project stored state into read models; they own no queue, storage, retry algorithm, provider selection, browser access, or asset-byte handling. `apps/cli` grew subcommands over those services, so the durable engine is operable end to end: project → scene → version → request → queue → provider → asset → QC → review → selection → production-ready scene. There is still no web UI, HTTP API, or worker daemon.
 
-Public research and implementation status are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), runnable Phase 1 details in [docs/vertical-slice.md](./docs/vertical-slice.md), Phase 2 details in [docs/google-flow-provider.md](./docs/google-flow-provider.md), Phase 3 service/operator design and commands in [docs/application-services.md](./docs/application-services.md), browser mechanics in [docs/browser-gateway.md](./docs/browser-gateway.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
+Public research and implementation status are recorded in [FEATURE_MATRIX.md](./FEATURE_MATRIX.md). The staged plan is in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), runnable Phase 1 details in [docs/vertical-slice.md](./docs/vertical-slice.md), Phase 2 details in [docs/google-flow-provider.md](./docs/google-flow-provider.md), Phase 3 service/operator design and commands in [docs/application-services.md](./docs/application-services.md), Phase 4A planning domain in [docs/planning-domain.md](./docs/planning-domain.md), browser mechanics in [docs/browser-gateway.md](./docs/browser-gateway.md), and trade-offs in [DECISIONS.md](./DECISIONS.md).
 
 ## 1. Current repository map
 
@@ -31,9 +42,9 @@ apps/
 
 packages/
   core/                       typed entities, statuses, and provider port
-  storage/                    SQLite v3 migrations and transactional repositories
+  storage/                    SQLite v4 migrations and transactional repositories (execution + planning state)
   queue/                      durable claim/lease/recovery worker
-  services/                   application services: validation, orchestration, read models
+  services/                   application services: validation, orchestration, read models (execution + planning)
   assets/                     filesystem asset bytes and streaming SHA-256
   qc/                         deterministic file/MIME/image QC
   browser/                    Playwright/CDP gateway for a user-controlled session
@@ -46,10 +57,10 @@ providers/
 
 | Package | Current responsibility | Important limit |
 | --- | --- | --- |
-| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job, scene, and project status transition tables. | No creative-story graph, API schema layer, UI, or workflow-agent tools yet; no Flow/browser concepts. |
-| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection, guarded scene/project status writes, and operator listing filters; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
+| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding/record) with the plan-version transition table; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job, scene, and project status transition tables. | No API schema layer, UI, or workflow-agent tools; no Flow/browser concepts; no planner, LLM, or heuristic authoring logic. |
+| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection, guarded scene/project status writes, and operator listing filters; the Phase 4A planning tables, lifecycle triggers, content hashing, and `SqlitePlanningRepository`; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
 | `packages/queue` | Atomic claim, lease heartbeat, expired-lease recovery, same-attempt provider lookup, retry classification, file import/QC, and transactional finalization/ack. | Current worker accepts one distinct output; no background daemon/service. |
-| `packages/services` | Typed application services (`Project`, `Scene`, `Generation`, `Queue`, `Review`, `Production`) over the existing repository/queue/worker; command validation, capability admission, derived production readiness, and operator read models. | Owns no SQL, queue, retry, provider, browser, or asset-byte logic; cannot bypass a repository transition guard. |
+| `packages/services` | Typed application services (`Project`, `Scene`, `Generation`, `Queue`, `Review`, `Production`) over the existing repository/queue/worker; command validation, capability admission, derived production readiness, and operator read models; the Phase 4A planning services (briefs, definitions, plans, validation, reads) including the pure deterministic validator and the capability gate. | Owns no SQL, queue, retry, provider, browser, or asset-byte logic; cannot bypass a repository transition guard; validation and approval never execute anything. |
 | `packages/assets` | Safe local path construction, atomic file publication, integrity checking, streaming SHA-256, bytes outside SQLite. | No object-store backend or retention/garbage-collection service. |
 | `packages/qc` | Deterministic existence, readability, MIME/signature, size, checksum, and supported image dimensions. | No semantic continuity QC, video/audio probe, or unsupported-format dimension guess. |
 | `providers/mock` | `SUCCESS`, `TRANSIENT_FAILURE`, `PERMANENT_FAILURE`, `TIMEOUT`, and `DUPLICATE_RESULT`; request-key manifests and deterministic local image bytes. | Proves the orchestration contract only; it is not a generative model. |
@@ -69,7 +80,7 @@ An accepted output is represented by `Asset` + immutable `AssetVersion`, linked 
 
 ### SQLite migrations
 
-`packages/storage/src/migrations.ts` owns forward-only `PRAGMA user_version` migrations through schema version 3. Fresh database creation, schema-v2 forward upgrade, and legacy-schema upgrade are tested. Existing project/scene/character/job/queue-entry/asset tables are retained. Legacy completed jobs are mapped to succeeded; ambiguous active work is marked failed with an explanation and is not auto-enqueued. Where the legacy scene exists, migration creates a scene-version snapshot for provenance.
+`packages/storage/src/migrations.ts` owns forward-only `PRAGMA user_version` migrations through schema version 4 (v4 is the additive planning domain: eleven tables, two `characters` columns, and lifecycle/immutability triggers). Fresh database creation, schema-v2 forward upgrade, and legacy-schema upgrade are tested. Existing project/scene/character/job/queue-entry/asset tables are retained. Legacy completed jobs are mapped to succeeded; ambiguous active work is marked failed with an explanation and is not auto-enqueued. Where the legacy scene exists, migration creates a scene-version snapshot for provenance.
 
 Database constraints/triggers protect logical job uniqueness, scene-version immutability/ownership, generation/asset provenance links, asset-version and QC immutability, and the terminal nature of review decisions. New jobs and assets are also checked in repository methods before writes. No migration drops or recreates user tables.
 
@@ -127,19 +138,69 @@ Queries are read-only compositions of repository reads: `ProjectOverview`, `Scen
 
 `apps/cli` routes a leading bare word to the operator commands and keeps the Phase 1 flag-only invocation as the vertical slice. Human and `--json` output come from the same read model; errors carry a stable code, and exit codes are `0` ok, `1` error, `2` usage error, `3` state legitimately blocks the command. Details and the full command list are in [docs/application-services.md](./docs/application-services.md).
 
-## 7. Deferred work
+## 7. Creative planning domain (Phase 4A)
+
+The planning layer sits above the Phase 3 services and reuses every guarantee below it. Its shape:
+
+```text
+CreativeBrief (project-scoped immutable snapshots, versioned by content)
+  └─ ProductionPlan ── current_version_id ──→ ProductionPlanVersion   (the aggregate boundary)
+        ├─ PlanStory · cast links · world + Visual DNA references
+        ├─ ScenePlan (unique scene key and order) ── scene cast, continuity, references, planned outputs
+        │     └─ GenerationSpec (kind, instructions, output count, aspect ratio, duration, references,
+        │                        constraints, requiredCapabilities: keyof ProviderCapabilities)
+        └─ PlanValidation (append-only evidence: validator version, content hash, findings)
+```
+
+- **Lifecycle on the version, not the plan.** `DRAFT → VALIDATED → APPROVED → EXECUTABLE → ARCHIVED`
+  with `PLAN_VERSION_STATUS_TRANSITIONS` in core and compare-and-set writes in storage; `revise` copies an
+  approved version into a fresh `DRAFT` instead of mutating it, and child writes recompute `content_hash`,
+  so an approval bound to changed content fails with `PLAN_VALIDATION_REQUIRED`.
+- **One capability model.** A spec's `requiredCapabilities` are `keyof ProviderCapabilities` keys; the
+  validator and `markExecutable` read declarations from the same `ProviderRegistry` the worker uses. No
+  provider is constructed, no session is opened, and no `supportsX` flag was invented. An unsatisfiable
+  plan fails with structured `CAPABILITY_UNAVAILABLE` findings or `PLAN_CAPABILITY_UNMET` detail rows.
+- **Database-enforced immutability.** v4 triggers refuse insert/update/delete against children of a
+  non-editable version, refuse deletion of approved versions, keep brief/world/DNA/validation rows
+  immutable, and require the plan's current-version pointer to belong to that plan — verified with raw SQL
+  that bypasses the repository.
+- **Persistence shape decision.** Normalized relational tables with foreign keys and uniqueness (not an
+  opaque JSON blob), so version semantics, reference integrity, per-child idempotency, and operator
+  queries are enforceable and queryable; only leaf payloads are JSON columns, encoded with the existing
+  canonical `stableJson`. Rationale and the full table list are in
+  [docs/planning-domain.md](./docs/planning-domain.md) §7.
+- **Planning/execution boundary.** No planning write touches `generation_jobs` or `queue_items`, and
+  `scene_plans` are not `scenes`. The bridge is a read-only execution preview plus the existing Phase 3
+  commands; there is no second execution engine, and Phase 4A deliberately stops before submitting a plan.
+- **No event bus.** Planning services call each other directly through `createApplication`; `packages/events`
+  stays unused, as decided in Phase 3.
+
+## 8. Deferred work
 
 - No web UI or HTTP API product surface, and no worker daemon: review, selection, and readiness are operator commands over the services, and execution is on demand (`queue run`), not a background loop.
 - No live-validated Google Flow behavior: the single-image browser adapter is fake-tested, but real account eligibility, selectors, generation status, result correlation, and download remain untested. Authentication is manual; no provider credentials are stored.
 - No multi-output persistence in one job, object storage, global deduplication, or retention/repair daemon.
-- No creative brief/story/storyboard/Visual DNA graph, agents, audio, timeline, render/export, publishing, or analytics.
+- The Phase 4A planning graph (brief, plan versions, story, cast, worlds, Visual DNA, scene plans, generation specs) exists and is validated; **no planner exists**: no deterministic Phase 4B authoring engine, no Phase 4C AI adapter, no agents, and no automation that turns an executable plan into scenes/jobs without the operator's explicit Phase 3 commands. No audio, timeline, render/export, publishing, or analytics.
 - No durable event/outbox system or distributed queue.
 - No semantic/image similarity evaluator, video/audio codec probe, duration QC, or unsupported image-dimension guess.
 
 These are future phases only when justified; they were not introduced as Phase 1–3 infrastructure.
 
-## 8. Verification
+## 9. Verification
 
 The Phase 1 validation commands and exact outcomes are recorded in [docs/vertical-slice.md](./docs/vertical-slice.md). Fresh and legacy SQLite migrations were exercised with the real `better-sqlite3` native addon. TypeScript build/typecheck and deterministic tests passed as listed there. The local CLI was run twice to confirm that its repeated success run reuses the same job, asset version, and attempt. Browser/CDP runtime and any live Google Flow behavior remain untested and intentionally unused.
 
 Phase 3 added `packages/services` (18 tests) and `apps/cli` operator tests (5), plus `packages/core` transition tests (2) and three new `packages/storage` tests for guarded status writes, reuse reporting, and operator listing filters. `corepack pnpm build`, `typecheck`, `test` (75 tests), and `vertical-slice` all pass on this checkout; no live Google Flow session was run, so provider-side behavior is still **BLOCKED / NOT RUN**.
+
+Phase 4A adds 40 tests on top of those 75 without changing any of them: `packages/core` 5 (lifecycle
+table, editability, capability-key parity, spec kinds, validator versioning), `packages/storage` 13
+(migration to v4 and v3→v4 upgrade, atomic aggregate writes, ownership triggers, duplicate scene
+identity, version copy and lineage, evidence append-only ranking, compare-and-set lifecycle, pointer
+and brief pinning, definition versioning, story/cast uniqueness), `packages/services` 16 (lifecycle and
+derived next actions, typed refusals, staleness, capability gate, planning/execution separation with a
+provably empty queue, revision immutability, read models, `PLANNING_NOT_CONFIGURED`, and 31 enumerated
+validator detections over hand-built snapshots), and `apps/cli` 6 (the operator walkthrough, blocked
+paths, revision, read-only preview, human/JSON parity, usage errors). Final state on this checkout:
+`corepack pnpm build` 11/11 packages, `corepack pnpm typecheck` 11/11, `corepack pnpm -r test` 115/115
+(core 7, browser 10, qc 4, storage 20, google-flow 22, queue 7, services 34, cli 11), and
+`corepack pnpm vertical-slice` reproducing the identical `selectedAssetVersionId` as Phase 3.

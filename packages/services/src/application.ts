@@ -1,4 +1,11 @@
-import type { ProviderDescriptor, ProviderRegistry, QueuePort, WorkerPort, JobRepository } from "./ports.js";
+import type {
+  ProviderDescriptor,
+  ProviderRegistry,
+  QueuePort,
+  WorkerPort,
+  JobRepository,
+  PlanningRepository,
+} from "./ports.js";
 import type { ServiceDeps } from "./deps.js";
 import { ProjectService } from "./project-service.js";
 import { SceneService } from "./scene-service.js";
@@ -6,6 +13,13 @@ import { GenerationService } from "./generation-service.js";
 import { QueueService } from "./queue-service.js";
 import { ReviewService } from "./review-service.js";
 import { ProductionService } from "./production-service.js";
+import {
+  CreativeBriefService,
+  PlanningDefinitionService,
+  PlanningReadService,
+  PlanningValidationService,
+  ProductionPlanService,
+} from "./planning.js";
 
 export interface ApplicationOptions {
   /** Durable queue port; required only for lease-recovery reporting. */
@@ -19,6 +33,11 @@ export interface ApplicationOptions {
   defaultMaxAttempts?: number;
   /** Clock used for timestamps when a command does not override it. */
   now?: () => Date;
+  /**
+   * Planning persistence for Phase 4A. Optional on purpose: a Phase 3 application keeps working
+   * exactly as before, and planning access without it raises `PLANNING_NOT_CONFIGURED`.
+   */
+  planning?: PlanningRepository;
 }
 
 export interface FlowForgeApplication {
@@ -30,6 +49,11 @@ export interface FlowForgeApplication {
   readonly execution: QueueService;
   readonly reviews: ReviewService;
   readonly production: ProductionService;
+  readonly briefs: CreativeBriefService;
+  readonly definitions: PlanningDefinitionService;
+  readonly plans: ProductionPlanService;
+  readonly planValidation: PlanningValidationService;
+  readonly planReads: PlanningReadService;
 }
 
 /**
@@ -55,6 +79,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
     providers,
     now: options.now ?? (() => new Date()),
     defaultMaxAttempts,
+    planning: options.planning,
   };
 
   const projects = new ProjectService(deps);
@@ -63,7 +88,26 @@ export function createApplication(repository: JobRepository, options: Applicatio
   const execution = new QueueService(deps);
   const reviews = new ReviewService(deps);
   const production = new ProductionService(deps, scenes);
-  return { repository, providers, projects, scenes, generation, execution, reviews, production };
+  const planReads = new PlanningReadService(deps);
+  const briefs = new CreativeBriefService(deps);
+  const definitions = new PlanningDefinitionService(deps);
+  const plans = new ProductionPlanService(deps, planReads);
+  const planValidation = new PlanningValidationService(deps, planReads);
+  return {
+    repository,
+    providers,
+    projects,
+    scenes,
+    generation,
+    execution,
+    reviews,
+    production,
+    briefs,
+    definitions,
+    plans,
+    planValidation,
+    planReads,
+  };
 }
 
 function toProviderRegistry(providers: Iterable<ProviderDescriptor> | undefined): ProviderRegistry {

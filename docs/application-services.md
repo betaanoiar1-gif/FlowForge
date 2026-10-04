@@ -176,3 +176,18 @@ No web UI, no HTTP API, no daemon, no service worker, no AI planner, no multi-ag
 orchestration, no publishing, no billing/analytics, no full video pipeline, no live
 Google Flow validation. `BrowserSessionLauncher` and the Google Flow manual-auth gate are
 unchanged. Redis/Kafka/RabbitMQ/Kubernetes remain excluded (D-014/D-015/D-016).
+
+## 10. Phase 4A continuation
+
+Phase 4A extends these services with the creative planning domain — `CreativeBriefService`,
+`PlanningDefinitionService`, `ProductionPlanService`, `PlanningValidationService`, and
+`PlanningReadService` — over the same conventions established here: a narrow structural repository port,
+command validation before any write, one durable owner per state change, shared read models for humans
+and `--json`, and typed error codes with exit code `3` for operator-blocking states. `createApplication`
+gains an optional `planning` dependency, so every existing caller in this document behaves exactly as
+before, and planning access without it fails with `PLANNING_NOT_CONFIGURED` instead of a `TypeError`.
+
+Planning is a layer *above* this one: no service here changed its queue, worker, retry, capability, or
+review behaviour, and the planning services own no execution path. The model, lifecycle, validation
+rules, persistence shape, idempotency keys, CLI, and verified walkthrough live in
+[docs/planning-domain.md](./planning-domain.md).

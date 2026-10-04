@@ -18,7 +18,7 @@ function seed(repository) {
 test("fresh database migrations and logical generation creation are durable and idempotent", () => {
   const repository = new SqliteJobRepository(":memory:");
   try {
-    assert.equal(repository.getSchemaVersion(), 3);
+    assert.equal(repository.getSchemaVersion(), 4);
     const { project, scene, version, job } = seed(repository);
     assert.equal(version.prompt, "  A test frame  ");
     assert.equal(repository.getCurrentSceneVersion(scene.id).id, version.id);

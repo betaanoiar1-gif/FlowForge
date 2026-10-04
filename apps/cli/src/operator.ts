@@ -13,37 +13,37 @@ import { parseArgs, rejectUnknown, UsageError, isSet, optionalNumber, optionalSt
 import type { ParsedArgs } from "./args.js";
 import { GLOBAL_FLAGS, openApplication, resolveGlobals, type OpenedApplication, type ResolvedGlobals } from "./runtime.js";
 
-export const EXIT_OK = 0;
-export const EXIT_ERROR = 1;
-export const EXIT_USAGE = 2;
-/** The request was well formed but durable state legitimately blocks it. */
-export const EXIT_BLOCKED = 3;
+export { EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./command-context.js";
 
+import {
+  EXIT_BLOCKED,
+  EXIT_ERROR,
+  EXIT_OK,
+  EXIT_USAGE,
+  defaultReviewer,
+  emit,
+  type CommandContext,
+  type CommandDefinition,
+} from "./command-context.js";
+import { PLANNING_COMMANDS } from "./planning-commands.js";
+
+/**
+ * Codes where the command was well formed and the durable state legitimately refuses it. Planning
+ * approvals and the executability gate land here, so scripts can distinguish "fix the plan" from
+ * "fix the invocation".
+ */
 const BLOCKING_CODES = new Set<string>([
   "READINESS_NOT_SATISFIED",
   "PROVIDER_COVERAGE_INCOMPLETE",
   "ACTIVE_WORK_PRESENT",
   "RETRY_BLOCKED_UNSAFE_STATE",
   "REVIEW_ALREADY_DECIDED",
+  "PLAN_VALIDATION_REQUIRED",
+  "PLAN_NOT_APPROVED",
+  "PLAN_NOT_EXECUTABLE",
+  "PLAN_NOT_EDITABLE",
+  "PLAN_CAPABILITY_UNMET",
 ]);
-
-interface CommandDefinition {
-  /** Human usage line, shown by `flowforge help <command>`. */
-  usage: string;
-  summary: string;
-  /** Command-specific flags; global flags are always accepted. */
-  flags: readonly string[];
-  /** Whether the command needs a durable worker (execution, provider-side cancellation). */
-  execution?: boolean;
-  run: (context: CommandContext) => Promise<void> | void;
-}
-
-interface CommandContext {
-  options: ParsedArgs["options"];
-  globals: ResolvedGlobals;
-  app: FlowForgeApplication;
-  opened: OpenedApplication;
-}
 
 export async function runOperatorCommand(argv: readonly string[]): Promise<number> {
   // Decided up front so even a parse or wiring failure can be reported in the requested shape.
@@ -116,19 +116,6 @@ function describeDetails(details: Readonly<Record<string, unknown>>): string[] {
     lines.push(`${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
   }
   return lines;
-}
-
-function emit<T>(globals: ResolvedGlobals, value: T, human: (value: T) => string[]): void {
-  if (globals.json) {
-    console.log(JSON.stringify({ ok: true, data: value }, null, 2));
-    return;
-  }
-  const lines = human(value);
-  if (lines.length > 0) console.log(lines.join("\n"));
-}
-
-function defaultReviewer(options: ParsedArgs["options"]): string {
-  return optionalString(options, "reviewer") ?? process.env.USER ?? "cli-operator";
 }
 
 const COMMANDS: Record<string, CommandDefinition> = {
@@ -523,6 +510,7 @@ const COMMANDS: Record<string, CommandDefinition> = {
       emit(globals, readiness, renderReadiness);
     },
   },
+  ...PLANNING_COMMANDS,
   "production ready": {
     usage: "production ready --scene-id ID",
     summary: "Mark a scene READY after the readiness gate passes.",

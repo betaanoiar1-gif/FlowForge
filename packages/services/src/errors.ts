@@ -42,6 +42,18 @@ export const APPLICATION_ERROR_CODES = Object.freeze({
   RETRY_NOT_ALLOWED: "RETRY_NOT_ALLOWED",
   /** A prior attempt may already have produced provider-side work; needs a new version. */
   RETRY_BLOCKED_UNSAFE_STATE: "RETRY_BLOCKED_UNSAFE_STATE",
+  /** Planning state was requested but this application has no planning repository wired. */
+  PLANNING_NOT_CONFIGURED: "PLANNING_NOT_CONFIGURED",
+  /** The plan version is frozen (approved, executable, or archived) and cannot be edited in place. */
+  PLAN_NOT_EDITABLE: "PLAN_NOT_EDITABLE",
+  /** Approval or execution requires current passing validation evidence that does not exist yet. */
+  PLAN_VALIDATION_REQUIRED: "PLAN_VALIDATION_REQUIRED",
+  /** The plan version has not been approved. */
+  PLAN_NOT_APPROVED: "PLAN_NOT_APPROVED",
+  /** The plan version is not marked executable, so no work may be derived from it. */
+  PLAN_NOT_EXECUTABLE: "PLAN_NOT_EXECUTABLE",
+  /** A configured provider cannot satisfy a generation spec's declared capability requirements. */
+  PLAN_CAPABILITY_UNMET: "PLAN_CAPABILITY_UNMET",
   /** The repository rejected the write for a reason the operator must see verbatim. */
   PERSISTENCE_REJECTED: "PERSISTENCE_REJECTED",
 } as const);
@@ -93,7 +105,8 @@ export function translateRepositoryError(error: unknown, fallback: ApplicationEr
   const classified: { code: ApplicationErrorCode; match: RegExp }[] = [
     { code: "IDEMPOTENCY_CONFLICT", match: /Idempotency key collision/i },
     { code: "NOT_FOUND", match: /not found/i },
-    { code: "INVALID_STATE_TRANSITION", match: /Invalid (generation job|scene|project)( status)? transition/i },
+    { code: "INVALID_STATE_TRANSITION", match: /Invalid (generation job|scene|project|plan version)( status)? transition/i },
+    { code: "PLAN_NOT_EDITABLE", match: /non-draft plan version|cannot be edited in place|approved plan versions cannot be edited/i },
     { code: "RETRY_NOT_ALLOWED", match: /Only failed jobs can be retried|exhausted its retry limit|Legacy jobs lack/i },
     { code: "RETRY_BLOCKED_UNSAFE_STATE", match: /uncertain or known provider result/i },
     { code: "SELECTION_NOT_ALLOWED", match: /Only an explicitly approved|Only an asset version with passing|invalid scene-version link|does not belong to scene/i },

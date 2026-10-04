@@ -4,7 +4,7 @@ FlowForge is an independent, provider-neutral creative-production system. Its pr
 
 ## Current status
 
-**Phase 1's durable MockProvider slice and Phase 3's application-service layer plus operator CLI are implemented; Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated.** The Phase 1 path remains the deterministic local/CI route:
+**Phases 1–3 are implemented, and Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability. It is a domain foundation, not an AI planner: no LLM, no agent, and no autonomous submission exists in this phase.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
 
 ```text
 Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
@@ -12,23 +12,23 @@ Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
         → explicit Review → explicit selected version
 ```
 
-The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models.
+The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
 
 ## Workspace packages
 
-- `packages/core` — typed projects, immutable scene versions, generation/provider contracts, attempt/queue/asset/QC/review records.
-- `packages/storage` — SQLite schema migrations, logical-generation idempotency, queue claims/leases, attempt history, assets, QC, reviews, and explicit selection.
+- `packages/core` — typed projects, immutable scene versions, generation/provider contracts, attempt/queue/asset/QC/review records, and the planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding) with the plan-version lifecycle transition table.
+- `packages/storage` — SQLite v4 schema migrations, logical-generation idempotency, queue claims/leases, attempt history, assets, QC, reviews, explicit selection, and the planning tables with lifecycle/immutability triggers and content hashing.
 - `packages/queue` — provider-neutral durable worker with recovery-before-submit, lease renewal, retry classification, artifact persistence, and finalization.
-- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models. Owns no queue, storage, retry, provider, browser, or asset-byte logic.
+- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models; plus the planning services (briefs, definitions, plans, deterministic validation, capability gating, plan read models, read-only execution preview). Owns no queue, storage, retry, provider, browser, or asset-byte logic.
 - `packages/assets` — atomic local filesystem storage for bytes and streaming SHA-256 integrity checks; bytes do not go in SQLite.
 - `packages/qc` — deterministic file, readability, MIME, size, checksum, and supported image-dimension checks. No semantic success is fabricated.
 - `providers/mock` — file-backed deterministic success, transient failure, permanent failure, timeout, and duplicate-result modes. Used by the local demo and ordinary reliability tests.
 - `providers/google-flow` — visible-UI provider for a narrowly scoped single-image workflow; fake-tested, live UI unverified, and isolated behind the provider port.
 - `packages/browser` — provider-neutral Playwright/CDP gateway with fake-transport tests, explicit tab selection, guarded input, observation, and visible upload/download actions.
 - `apps/browser-gateway` — sanitized local CDP diagnostics, not a server or worker.
-- `apps/cli` — operator subcommands over the services (project, scene, generate, queue, review, production, provider) plus the Phase 1 MockProvider demo command.
+- `apps/cli` — operator subcommands over the services (project, scene, generate, queue, review, production, provider, brief, definition, plan) plus the Phase 1 MockProvider demo command.
 
 ## Quick start
 
@@ -79,6 +79,45 @@ serve is refused rather than failed: run `queue run` with the matching `--provid
 queue and pass `--ignore-provider-coverage` deliberately. `queue recover` requeues work whose worker
 lease expired. `cancel --local-only` clears local durable state without contacting the provider.
 
+## Planning before generating (Phase 4A)
+
+A plan is authored, validated, approved, and marked executable before any work is submitted. Every step
+is an explicit command, and every refusal is typed:
+
+```sh
+corepack pnpm --filter @flowforge/cli build
+CLI="node apps/cli/dist/index.js --data-dir /tmp/flowforge-planning"
+$CLI project create --project-id pilot --name "Pilot"
+$CLI brief create --project-id pilot --title "Launch film" --concept "A rooftop chase at dawn" \
+                 --objective "Feel momentum" --constraints-json '[{"kind":"MUST","value":"no on-screen text"}]'
+$CLI definition character-create --project-id pilot --name "Aya" \
+                 --traits-json '{"role":"protagonist","appearance":"red jacket","personality":"decisive"}'
+$CLI definition world-create --project-id pilot --name "Rooftops" --environment "Dense rooftop grid at dawn"
+$CLI definition dna-create --project-id pilot --name "dawn-grain" --style "35mm film look" \
+                 --palette-json '["#0b1020"]' --lighting "low key" --composition "centered thirds" \
+                 --camera-language "slow dolly" --rendering-style "photoreal" --atmosphere "tense"
+$CLI plan create --project-id pilot --brief-id <briefId> --title "Launch film plan" --visual-dna-id <dnaId>
+$CLI plan story set --plan-id plan-1 --premise "A courier carries one package across the rooftops"
+$CLI plan scene add --plan-id plan-1 --scene-key open-01 --scene-number 1 --title "Arrival" \
+                 --narrative-purpose "Establish the grid" --world-id <worldId> --duration-target-ms 6000
+$CLI plan spec add --scene-plan-id <scenePlanId> --kind image --instructions "Wide rooftop establishing shot" \
+                 --output-count 1 --aspect-ratio 16:9 --capabilities-csv imageGeneration
+$CLI plan status --plan-id plan-1        # version, validity, approval, executability, blockers, next action
+$CLI plan validate --plan-id plan-1      # deterministic structural validation; exit 3 when findings block
+$CLI plan approve --plan-id plan-1 --reviewer <name>          # bound to the current content hash
+$CLI plan executable --plan-id plan-1 --providers mock        # capability gate against provider declarations
+$CLI plan preview --plan-id plan-1       # the exact Phase 3 commands a later phase would submit
+```
+
+`plan status` and `plan validate` are safe to repeat: validation evidence is reused while the content hash
+is unchanged, an edit makes the evidence stale (`VALIDATION_STALE`) until you validate again, and an
+approved version is frozen — `plan revise` copies it into a new draft instead of editing it. Marking a plan
+executable requires passing validation, an explicit approval, and a configured provider that declares every
+capability each spec needs; an unsatisfiable requirement fails with `PLAN_CAPABILITY_UNMET` and the offending
+spec ids. Nothing in this flow creates a scene, a job, or a queue entry — `flowforge help` (or
+`flowforge plan validate --help` for one command) and
+[docs/planning-domain.md](./docs/planning-domain.md) document the whole surface, including the exit codes.
+
 ## Browser diagnostics and live Flow smoke
 
 The safe prompt-only diagnostic does not click Generate, but it requires a deliberately prepared, manually authenticated Flow page with an empty prompt editor:
@@ -114,4 +153,4 @@ The exact Node-header path is machine-specific. In the Phase 1 sandbox the local
 
 ## Safety boundary
 
-Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, AI planner, agent system, publishing, analytics, or full video pipeline in this phase; the operator surface is the CLI over the application services.
+Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, AI planner, agent system, publishing, analytics, or full video pipeline in this phase; the operator surface is the CLI over the application services. Phase 4A adds the planning *domain* only: no model call, no autonomous planner, no provider-implementation change, and no plan that can execute without the explicit Phase 3 commands above.

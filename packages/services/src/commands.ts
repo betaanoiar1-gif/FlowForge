@@ -103,3 +103,136 @@ export interface DecideReviewCommand extends CommandOptions {
 export interface SelectAssetVersionCommand extends SceneIdCommand {
   assetVersionId: string;
 }
+
+/* -------------------------------------------------------------------------- *
+ * Planning commands (Phase 4A). Same conventions as the Phase 3 commands: plain
+ * JSON-safe input, explicit IDs, optional `now` for deterministic tests.
+ * -------------------------------------------------------------------------- */
+
+/** Address of a plan version: the current one by default, a specific number on request. */
+export interface PlanVersionTarget {
+  planId: string;
+  versionNumber?: number;
+}
+
+export interface CreateBriefCommand {
+  briefId?: string;
+  projectId: string;
+  title: string;
+  concept?: string;
+  objective?: string;
+  audience?: string;
+  tone?: string;
+  style?: string;
+  constraints?: readonly { kind: "MUST" | "MUST_NOT" | "PREFERENCE"; value: string }[];
+  now?: string;
+}
+
+export interface CreateWorldCommand {
+  worldId?: string;
+  projectId: string;
+  name: string;
+  description?: string;
+  environment?: string;
+  rules?: readonly string[];
+  visualIdentity?: { description?: string; palette?: readonly string[]; lighting?: string };
+  now?: string;
+}
+
+export interface CreateVisualDnaCommand {
+  visualDnaId?: string;
+  projectId: string;
+  name: string;
+  description?: string;
+  style: string;
+  palette?: readonly string[];
+  lighting?: string;
+  composition?: string;
+  cameraLanguage?: string;
+  renderingStyle?: string;
+  atmosphere?: string;
+  consistencyRules?: readonly string[];
+  now?: string;
+}
+
+export interface CreatePlanningCharacterCommand {
+  characterId?: string;
+  projectId: string;
+  name: string;
+  description?: string;
+  traits?: { role?: string; appearance: string; personality: string; voice?: string };
+  visualIdentity?: {
+    description: string;
+    distinguishingFeatures?: readonly string[];
+    palette?: readonly string[];
+  };
+  now?: string;
+}
+
+export interface CreatePlanCommand {
+  planId?: string;
+  projectId: string;
+  briefId: string;
+  title: string;
+  visualDnaId?: string;
+  now?: string;
+}
+
+export interface SetPlanStoryCommand extends PlanVersionTarget {
+  premise: string;
+  structure?: string;
+  themes?: readonly string[];
+  beginning?: string;
+  development?: string;
+  ending?: string;
+  now?: string;
+}
+
+export interface SetPlanCastCommand extends PlanVersionTarget {
+  cast: readonly { characterId: string; role?: string }[];
+  now?: string;
+}
+
+export interface AddScenePlanCommand extends PlanVersionTarget {
+  sceneKey: string;
+  sceneNumber?: number;
+  title: string;
+  narrativePurpose?: string;
+  description?: string;
+  durationTargetMs?: number;
+  worldId?: string;
+  visualDnaId?: string;
+  continuity?: readonly { statement: string; source?: string }[];
+  requiredReferences?: readonly { kind: string; id: string; note?: string }[];
+  plannedOutputs?: readonly { kind: string; count: number; note?: string }[];
+  cast?: readonly { characterId: string; role?: string; position?: number }[];
+  now?: string;
+}
+
+export interface SetScenePlanCastCommand {
+  scenePlanId: string;
+  cast: readonly { characterId: string; role?: string; position?: number }[];
+  now?: string;
+}
+
+export interface AddGenerationSpecCommand {
+  scenePlanId: string;
+  /** Validated against `GENERATION_SPEC_KINDS` by the service, not by the caller. */
+  kind: string;
+  instructions: string;
+  outputCount?: number;
+  aspectRatio?: string;
+  durationMs?: number;
+  references?: readonly { kind: string; id: string; note?: string }[];
+  constraints?: readonly string[];
+  requiredCapabilities?: readonly string[];
+  requirementNotes?: string;
+  now?: string;
+}
+
+export interface PlanLifecycleCommand extends PlanVersionTarget {
+  reviewer?: string;
+  providers?: readonly string[];
+  note?: string;
+  now?: string;
+}

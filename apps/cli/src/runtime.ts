@@ -4,7 +4,7 @@ import { FileSystemAssetStore } from "@flowforge/assets";
 import type { GenerationProvider } from "@flowforge/core";
 import type { MockArtifactMode, MockProviderMode } from "@flowforge/provider-mock";
 import { LocalQueueWorker, SqliteJobQueue } from "@flowforge/queue";
-import { SqliteJobRepository } from "@flowforge/storage";
+import { SqliteJobRepository, SqlitePlanningRepository } from "@flowforge/storage";
 import { ApplicationError, createApplication, type FlowForgeApplication, type ProviderDescriptor } from "@flowforge/services";
 import { isSet, optionalNumber, optionalString, UsageError, type ParsedArgs } from "./args.js";
 
@@ -110,6 +110,8 @@ export async function openApplication(
   await mkdir(dataDir, { recursive: true });
   const assetRoot = path.join(dataDir, "assets");
   const repository = new SqliteJobRepository(path.join(dataDir, "flowforge.sqlite"));
+  // Planning (Phase 4A) shares the repository's migrated connection instead of opening a second one.
+  const planning = new SqlitePlanningRepository(repository);
   const queue = new SqliteJobQueue(repository);
 
   let descriptor: ProviderDescriptor;
@@ -171,6 +173,7 @@ export async function openApplication(
     worker,
     workerProviderId: worker ? descriptor.id : undefined,
     defaultMaxAttempts: globals.maxAttempts,
+    planning,
   });
 
   return {

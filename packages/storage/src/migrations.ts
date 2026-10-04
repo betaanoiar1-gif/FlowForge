@@ -93,7 +93,7 @@ const LEGACY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_assets_sha256 ON assets(sha256);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export function migrateDatabase(db: Database.Database): void {
   let version = Number(db.pragma("user_version", { simple: true }));
@@ -123,6 +123,14 @@ export function migrateDatabase(db: Database.Database): void {
     db.transaction(() => {
       migrateToVersionThree(db);
       db.pragma("user_version = 3");
+    }).immediate();
+    version = 3;
+  }
+
+  if (version < 4) {
+    db.transaction(() => {
+      migrateToVersionFour(db);
+      db.pragma("user_version = 4");
     }).immediate();
   }
 }
@@ -554,6 +562,552 @@ function migrateLegacyJobs(db: Database.Database): void {
       row.updated_at,
       row.id,
     );
+  }
+}
+
+/**
+ * Children of a plan version that may only change while the version is being authored (`DRAFT`) or
+ * after a passing validation that has not been approved yet (`VALIDATED`). `statusSql` resolves the
+ * owning version's status for a row of `table`, either directly or through its scene plan.
+ */
+const PLAN_CHILD_GUARDS: ReadonlyArray<{
+  table: string;
+  parentColumn: string;
+  statusSql: (alias: string) => string;
+}> = [
+  {
+    table: "plan_stories",
+    parentColumn: "plan_version_id",
+    statusSql: (alias) => `(SELECT status FROM production_plan_versions WHERE id = ${alias}.plan_version_id)`,
+  },
+  {
+    table: "plan_version_characters",
+    parentColumn: "plan_version_id",
+    statusSql: (alias) => `(SELECT status FROM production_plan_versions WHERE id = ${alias}.plan_version_id)`,
+  },
+  {
+    table: "scene_plans",
+    parentColumn: "plan_version_id",
+    statusSql: (alias) => `(SELECT status FROM production_plan_versions WHERE id = ${alias}.plan_version_id)`,
+  },
+  {
+    table: "scene_plan_characters",
+    parentColumn: "scene_plan_id",
+    statusSql: (alias) =>
+      `(SELECT v.status FROM scene_plans sp JOIN production_plan_versions v ON v.id = sp.plan_version_id
+         WHERE sp.id = ${alias}.scene_plan_id)`,
+  },
+  {
+    table: "generation_specs",
+    parentColumn: "scene_plan_id",
+    statusSql: (alias) =>
+      `(SELECT v.status FROM scene_plans sp JOIN production_plan_versions v ON v.id = sp.plan_version_id
+         WHERE sp.id = ${alias}.scene_plan_id)`,
+  },
+];
+
+/**
+ * Version 4 - the creative planning domain (Phase 4A).
+ *
+ * Strictly additive: no Phase 0-3 table is altered beyond two new optional `characters` columns, no
+ * row is rewritten or deleted, and nothing is dropped or recreated. Planning state lives in normalized
+ * relational tables (not opaque JSON blobs) so version semantics, reference integrity, and per-entity
+ * idempotency are enforced by SQLite.
+ */
+function migrateToVersionFour(db: Database.Database): void {
+  addColumn(db, "characters", "traits_json TEXT");
+  addColumn(db, "characters", "visual_identity_json TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS creative_briefs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      version_number INTEGER NOT NULL,
+      supersedes_brief_id TEXT REFERENCES creative_briefs(id) ON DELETE RESTRICT,
+      title TEXT NOT NULL,
+      concept TEXT NOT NULL DEFAULT '',
+      objective TEXT NOT NULL DEFAULT '',
+      audience TEXT NOT NULL DEFAULT '',
+      tone TEXT NOT NULL DEFAULT '',
+      style TEXT NOT NULL DEFAULT '',
+      constraints_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+      content_hash TEXT NOT NULL,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (project_id, version_number),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS worlds (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      environment TEXT NOT NULL DEFAULT '',
+      rules_json TEXT NOT NULL DEFAULT '[]',
+      visual_identity_json TEXT NOT NULL DEFAULT '{}',
+      version_number INTEGER NOT NULL,
+      supersedes_world_id TEXT REFERENCES worlds(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+      content_hash TEXT NOT NULL,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (project_id, name, version_number),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS visual_dna (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      style TEXT NOT NULL DEFAULT '',
+      palette_json TEXT NOT NULL DEFAULT '[]',
+      lighting TEXT NOT NULL DEFAULT '',
+      composition TEXT NOT NULL DEFAULT '',
+      camera_language TEXT NOT NULL DEFAULT '',
+      rendering_style TEXT NOT NULL DEFAULT '',
+      atmosphere TEXT NOT NULL DEFAULT '',
+      consistency_rules_json TEXT NOT NULL DEFAULT '[]',
+      version_number INTEGER NOT NULL,
+      supersedes_dna_id TEXT REFERENCES visual_dna(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+      content_hash TEXT NOT NULL,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (project_id, name, version_number),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    /* production_plans.current_version_id deliberately has no foreign key: production_plan_versions
+       references this table, so the reverse edge would be a forward reference at create time. The
+       membership trigger below enforces the same invariant. */
+    CREATE TABLE IF NOT EXISTS production_plans (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      brief_id TEXT NOT NULL REFERENCES creative_briefs(id) ON DELETE RESTRICT,
+      title TEXT NOT NULL,
+      current_version_id TEXT,
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS production_plan_versions (
+      id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL REFERENCES production_plans(id) ON DELETE CASCADE,
+      version_number INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'DRAFT'
+        CHECK (status IN ('DRAFT', 'VALIDATED', 'APPROVED', 'EXECUTABLE', 'ARCHIVED')),
+      content_hash TEXT NOT NULL,
+      visual_dna_id TEXT REFERENCES visual_dna(id) ON DELETE RESTRICT,
+      predecessor_version_id TEXT REFERENCES production_plan_versions(id) ON DELETE RESTRICT,
+      revision_note TEXT NOT NULL DEFAULT '',
+      approved_by TEXT,
+      approved_at TEXT,
+      approved_validation_id TEXT,
+      executable_at TEXT,
+      executable_providers_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (plan_id, version_number)
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_stories (
+      id TEXT PRIMARY KEY,
+      plan_version_id TEXT NOT NULL REFERENCES production_plan_versions(id) ON DELETE CASCADE,
+      premise TEXT NOT NULL DEFAULT '',
+      structure TEXT NOT NULL DEFAULT '',
+      themes_json TEXT NOT NULL DEFAULT '[]',
+      beginning TEXT NOT NULL DEFAULT '',
+      development TEXT NOT NULL DEFAULT '',
+      ending TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (plan_version_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_version_characters (
+      plan_version_id TEXT NOT NULL REFERENCES production_plan_versions(id) ON DELETE CASCADE,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE RESTRICT,
+      role TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (plan_version_id, character_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS scene_plans (
+      id TEXT PRIMARY KEY,
+      plan_version_id TEXT NOT NULL REFERENCES production_plan_versions(id) ON DELETE CASCADE,
+      scene_key TEXT NOT NULL,
+      scene_number INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      narrative_purpose TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      duration_target_ms INTEGER,
+      world_id TEXT REFERENCES worlds(id) ON DELETE RESTRICT,
+      visual_dna_id TEXT REFERENCES visual_dna(id) ON DELETE RESTRICT,
+      continuity_json TEXT NOT NULL DEFAULT '[]',
+      references_json TEXT NOT NULL DEFAULT '[]',
+      planned_outputs_json TEXT NOT NULL DEFAULT '[]',
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (plan_version_id, scene_number),
+      UNIQUE (plan_version_id, scene_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS scene_plan_characters (
+      scene_plan_id TEXT NOT NULL REFERENCES scene_plans(id) ON DELETE CASCADE,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE RESTRICT,
+      role TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (scene_plan_id, character_id),
+      UNIQUE (scene_plan_id, position)
+    );
+
+    CREATE TABLE IF NOT EXISTS generation_specs (
+      id TEXT PRIMARY KEY,
+      scene_plan_id TEXT NOT NULL REFERENCES scene_plans(id) ON DELETE CASCADE,
+      spec_number INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'audio', 'text')),
+      instructions TEXT NOT NULL DEFAULT '',
+      output_count INTEGER NOT NULL DEFAULT 1,
+      aspect_ratio TEXT,
+      duration_ms INTEGER,
+      references_json TEXT NOT NULL DEFAULT '[]',
+      constraints_json TEXT NOT NULL DEFAULT '[]',
+      required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+      requirement_notes TEXT NOT NULL DEFAULT '',
+      idempotency_key TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (scene_plan_id, spec_number)
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_validations (
+      id TEXT PRIMARY KEY,
+      plan_version_id TEXT NOT NULL REFERENCES production_plan_versions(id) ON DELETE CASCADE,
+      validator_version TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('PASSED', 'FAILED')),
+      content_hash TEXT NOT NULL,
+      findings_json TEXT NOT NULL DEFAULT '[]',
+      error_count INTEGER NOT NULL DEFAULT 0,
+      warning_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      UNIQUE (plan_version_id, validator_version, content_hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_creative_briefs_project
+      ON creative_briefs(project_id, status, version_number);
+    CREATE INDEX IF NOT EXISTS idx_worlds_project ON worlds(project_id, status, name);
+    CREATE INDEX IF NOT EXISTS idx_visual_dna_project ON visual_dna(project_id, status, name);
+    CREATE INDEX IF NOT EXISTS idx_production_plans_project
+      ON production_plans(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_production_plan_versions_plan
+      ON production_plan_versions(plan_id, version_number);
+    CREATE INDEX IF NOT EXISTS idx_plan_stories_version ON plan_stories(plan_version_id);
+    CREATE INDEX IF NOT EXISTS idx_plan_version_characters_character
+      ON plan_version_characters(character_id);
+    CREATE INDEX IF NOT EXISTS idx_scene_plans_version
+      ON scene_plans(plan_version_id, scene_number);
+    CREATE INDEX IF NOT EXISTS idx_scene_plan_characters_character
+      ON scene_plan_characters(character_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_specs_scene_plan
+      ON generation_specs(scene_plan_id, spec_number);
+    CREATE INDEX IF NOT EXISTS idx_plan_validations_version
+      ON plan_validations(plan_version_id, created_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_creative_briefs_idempotency
+      ON creative_briefs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_worlds_idempotency
+      ON worlds(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_visual_dna_idempotency
+      ON visual_dna(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_production_plans_idempotency
+      ON production_plans(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scene_plans_idempotency
+      ON scene_plans(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_specs_idempotency
+      ON generation_specs(idempotency_key) WHERE idempotency_key IS NOT NULL;
+  `);
+
+  db.exec(`
+    -- Brief, world, and visual DNA snapshots are immutable records. Only the ACTIVE -> SUPERSEDED
+    -- pointer moves, and never backwards.
+    CREATE TRIGGER IF NOT EXISTS creative_briefs_content_is_immutable
+      BEFORE UPDATE ON creative_briefs
+      WHEN OLD.id <> NEW.id
+        OR OLD.project_id <> NEW.project_id
+        OR OLD.version_number <> NEW.version_number
+        OR OLD.supersedes_brief_id IS NOT NEW.supersedes_brief_id
+        OR OLD.title <> NEW.title
+        OR OLD.concept <> NEW.concept
+        OR OLD.objective <> NEW.objective
+        OR OLD.audience <> NEW.audience
+        OR OLD.tone <> NEW.tone
+        OR OLD.style <> NEW.style
+        OR OLD.constraints_json <> NEW.constraints_json
+        OR OLD.content_hash <> NEW.content_hash
+        OR OLD.created_at <> NEW.created_at
+        OR OLD.idempotency_key IS NOT NEW.idempotency_key
+        OR OLD.status = 'SUPERSEDED'
+      BEGIN
+        SELECT RAISE(ABORT, 'creative brief snapshots are immutable');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS worlds_content_is_immutable
+      BEFORE UPDATE ON worlds
+      WHEN OLD.id <> NEW.id
+        OR OLD.project_id <> NEW.project_id
+        OR OLD.name <> NEW.name
+        OR OLD.version_number <> NEW.version_number
+        OR OLD.supersedes_world_id IS NOT NEW.supersedes_world_id
+        OR OLD.description <> NEW.description
+        OR OLD.environment <> NEW.environment
+        OR OLD.rules_json <> NEW.rules_json
+        OR OLD.visual_identity_json <> NEW.visual_identity_json
+        OR OLD.content_hash <> NEW.content_hash
+        OR OLD.created_at <> NEW.created_at
+        OR OLD.idempotency_key IS NOT NEW.idempotency_key
+        OR OLD.status = 'SUPERSEDED'
+      BEGIN
+        SELECT RAISE(ABORT, 'world definitions are immutable');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS visual_dna_content_is_immutable
+      BEFORE UPDATE ON visual_dna
+      WHEN OLD.id <> NEW.id
+        OR OLD.project_id <> NEW.project_id
+        OR OLD.name <> NEW.name
+        OR OLD.version_number <> NEW.version_number
+        OR OLD.supersedes_dna_id IS NOT NEW.supersedes_dna_id
+        OR OLD.description <> NEW.description
+        OR OLD.style <> NEW.style
+        OR OLD.palette_json <> NEW.palette_json
+        OR OLD.lighting <> NEW.lighting
+        OR OLD.composition <> NEW.composition
+        OR OLD.camera_language <> NEW.camera_language
+        OR OLD.rendering_style <> NEW.rendering_style
+        OR OLD.atmosphere <> NEW.atmosphere
+        OR OLD.consistency_rules_json <> NEW.consistency_rules_json
+        OR OLD.content_hash <> NEW.content_hash
+        OR OLD.created_at <> NEW.created_at
+        OR OLD.idempotency_key IS NOT NEW.idempotency_key
+        OR OLD.status = 'SUPERSEDED'
+      BEGIN
+        SELECT RAISE(ABORT, 'visual DNA definitions are immutable');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS creative_briefs_cannot_be_deleted
+      BEFORE DELETE ON creative_briefs
+      BEGIN
+        SELECT RAISE(ABORT, 'creative brief snapshots cannot be deleted');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS worlds_cannot_be_deleted
+      BEFORE DELETE ON worlds
+      BEGIN
+        SELECT RAISE(ABORT, 'world definitions cannot be deleted');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS visual_dna_cannot_be_deleted
+      BEFORE DELETE ON visual_dna
+      BEGIN
+        SELECT RAISE(ABORT, 'visual DNA definitions cannot be deleted');
+      END;
+
+    -- A plan belongs to the same project as its pinned brief, and its current pointer must be one of
+    -- its own versions.
+    CREATE TRIGGER IF NOT EXISTS production_plan_brief_must_match_project
+      BEFORE INSERT ON production_plans
+      WHEN (SELECT project_id FROM creative_briefs WHERE id = NEW.brief_id) IS NOT NEW.project_id
+      BEGIN
+        SELECT RAISE(ABORT, 'production plan brief must belong to the same project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_brief_must_match_project_update
+      BEFORE UPDATE ON production_plans
+      WHEN (SELECT project_id FROM creative_briefs WHERE id = NEW.brief_id) IS NOT NEW.project_id
+      BEGIN
+        SELECT RAISE(ABORT, 'production plan brief must belong to the same project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_current_version_must_match_plan
+      BEFORE UPDATE ON production_plans
+      WHEN NEW.current_version_id IS NOT NULL AND (
+        SELECT plan_id FROM production_plan_versions WHERE id = NEW.current_version_id
+      ) IS NOT NEW.id
+      BEGIN
+        SELECT RAISE(ABORT, 'production plan current version must belong to the plan');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_current_version_must_match_plan_insert
+      BEFORE INSERT ON production_plans
+      WHEN NEW.current_version_id IS NOT NULL AND (
+        SELECT plan_id FROM production_plan_versions WHERE id = NEW.current_version_id
+      ) IS NOT NEW.id
+      BEGIN
+        SELECT RAISE(ABORT, 'production plan current version must belong to the plan');
+      END;
+
+    -- Version lineage: a predecessor must be an earlier version of the same plan.
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_lineage_must_match_plan
+      BEFORE INSERT ON production_plan_versions
+      WHEN NEW.predecessor_version_id IS NOT NULL AND (
+        (SELECT plan_id FROM production_plan_versions WHERE id = NEW.predecessor_version_id)
+          IS NOT NEW.plan_id
+        OR (SELECT version_number FROM production_plan_versions
+              WHERE id = NEW.predecessor_version_id) >= NEW.version_number
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'plan version predecessor must be an earlier version of the same plan');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS plan_version_visual_dna_must_match_project
+      BEFORE INSERT ON production_plan_versions
+      WHEN NEW.visual_dna_id IS NOT NULL AND (
+        SELECT project_id FROM production_plans WHERE id = NEW.plan_id
+      ) IS NOT (SELECT project_id FROM visual_dna WHERE id = NEW.visual_dna_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'plan version visual DNA must belong to the plan project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS plan_version_visual_dna_must_match_project_update
+      BEFORE UPDATE ON production_plan_versions
+      WHEN NEW.visual_dna_id IS NOT NULL AND (
+        SELECT project_id FROM production_plans WHERE id = NEW.plan_id
+      ) IS NOT (SELECT project_id FROM visual_dna WHERE id = NEW.visual_dna_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'plan version visual DNA must belong to the plan project');
+      END;
+
+    -- Frozen content: once a version is approved (or archived) its content may not move. Lifecycle
+    -- status and audit columns may still change, which is how EXECUTABLE and ARCHIVED are recorded.
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_content_is_immutable_once_frozen
+      BEFORE UPDATE ON production_plan_versions
+      WHEN OLD.status IN ('APPROVED', 'EXECUTABLE', 'ARCHIVED')
+        AND (
+          OLD.plan_id <> NEW.plan_id
+          OR OLD.version_number <> NEW.version_number
+          OR OLD.content_hash <> NEW.content_hash
+          OR OLD.visual_dna_id IS NOT NEW.visual_dna_id
+          OR OLD.predecessor_version_id IS NOT NEW.predecessor_version_id
+          OR OLD.created_at <> NEW.created_at
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'approved plan versions cannot be edited; create a new version');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_cannot_be_deleted_when_frozen
+      BEFORE DELETE ON production_plan_versions
+      WHEN OLD.status IN ('APPROVED', 'EXECUTABLE', 'ARCHIVED')
+      BEGIN
+        SELECT RAISE(ABORT, 'approved plan versions cannot be deleted');
+      END;
+
+    -- A character used by a plan version must be an identity in that plan's project.
+    CREATE TRIGGER IF NOT EXISTS plan_version_character_must_match_project
+      BEFORE INSERT ON plan_version_characters
+      WHEN (
+        SELECT p.project_id FROM production_plan_versions v JOIN production_plans p ON p.id = v.plan_id
+         WHERE v.id = NEW.plan_version_id
+      ) IS NOT (SELECT project_id FROM characters WHERE id = NEW.character_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'plan cast character must belong to the plan project');
+      END;
+
+    -- Required planning references must resolve inside the plan's project.
+    CREATE TRIGGER IF NOT EXISTS scene_plan_world_must_match_project
+      BEFORE INSERT ON scene_plans
+      WHEN NEW.world_id IS NOT NULL AND (
+        SELECT p.project_id FROM production_plan_versions v JOIN production_plans p ON p.id = v.plan_id
+         WHERE v.id = NEW.plan_version_id
+      ) IS NOT (SELECT project_id FROM worlds WHERE id = NEW.world_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene plan world must belong to the plan project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS scene_plan_world_must_match_project_update
+      BEFORE UPDATE ON scene_plans
+      WHEN NEW.world_id IS NOT NULL AND (
+        SELECT p.project_id FROM production_plan_versions v JOIN production_plans p ON p.id = v.plan_id
+         WHERE v.id = NEW.plan_version_id
+      ) IS NOT (SELECT project_id FROM worlds WHERE id = NEW.world_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene plan world must belong to the plan project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS scene_plan_visual_dna_must_match_project
+      BEFORE INSERT ON scene_plans
+      WHEN NEW.visual_dna_id IS NOT NULL AND (
+        SELECT p.project_id FROM production_plan_versions v JOIN production_plans p ON p.id = v.plan_id
+         WHERE v.id = NEW.plan_version_id
+      ) IS NOT (SELECT project_id FROM visual_dna WHERE id = NEW.visual_dna_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene plan visual DNA must belong to the plan project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS scene_plan_visual_dna_must_match_project_update
+      BEFORE UPDATE ON scene_plans
+      WHEN NEW.visual_dna_id IS NOT NULL AND (
+        SELECT p.project_id FROM production_plan_versions v JOIN production_plans p ON p.id = v.plan_id
+         WHERE v.id = NEW.plan_version_id
+      ) IS NOT (SELECT project_id FROM visual_dna WHERE id = NEW.visual_dna_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene plan visual DNA must belong to the plan project');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS scene_plan_character_must_match_project
+      BEFORE INSERT ON scene_plan_characters
+      WHEN (
+        SELECT pp.project_id FROM scene_plans sp
+          JOIN production_plan_versions v ON v.id = sp.plan_version_id
+          JOIN production_plans pp ON pp.id = v.plan_id
+         WHERE sp.id = NEW.scene_plan_id
+      ) IS NOT (SELECT project_id FROM characters WHERE id = NEW.character_id)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene plan cast character must belong to the plan project');
+      END;
+
+    -- Validation evidence is append-only, like QC results and review decisions.
+    CREATE TRIGGER IF NOT EXISTS plan_validations_are_immutable
+      BEFORE UPDATE ON plan_validations
+      BEGIN
+        SELECT RAISE(ABORT, 'plan validation evidence is immutable');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS plan_validations_cannot_be_deleted
+      BEFORE DELETE ON plan_validations
+      BEGIN
+        SELECT RAISE(ABORT, 'plan validation evidence is immutable');
+      END;
+  `);
+
+  for (const guard of PLAN_CHILD_GUARDS) {
+    const operations = [
+      ["insert", "INSERT", "NEW", "add"],
+      ["update", "UPDATE", "NEW", "edit"],
+      ["delete", "DELETE", "OLD", "remove"],
+    ] as const;
+    const sql = operations
+      .map(([suffix, operation, alias, verb]) => {
+        const checks = [`${guard.statusSql(alias)} NOT IN ('DRAFT', 'VALIDATED')`];
+        if (operation === "UPDATE") {
+          checks.unshift(`${guard.statusSql("OLD")} NOT IN ('DRAFT', 'VALIDATED')`);
+          checks.push(`OLD.${guard.parentColumn} <> NEW.${guard.parentColumn}`);
+        }
+        return `
+    CREATE TRIGGER IF NOT EXISTS ${guard.table}_requires_editable_plan_version_${suffix}
+      BEFORE ${operation} ON ${guard.table}
+      WHEN ${checks.join("\n        OR ")}
+      BEGIN
+        SELECT RAISE(ABORT, 'cannot ${verb} ${guard.table.replace(/_/g, " ")} of a non-draft plan version');
+      END;`;
+      })
+      .join("\n");
+    db.exec(sql);
   }
 }
 

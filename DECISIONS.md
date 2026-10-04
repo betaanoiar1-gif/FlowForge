@@ -1,7 +1,7 @@
 # FlowForge Engineering Decision Log
 
 - **Started:** 2026-10-04
-- **Status note:** D-001–D-012 record Phase 0 architecture/research decisions, D-013–D-018 record Phase 1 implementation choices, and D-019–D-022 record Phase 2 provider choices. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/vertical-slice.md](./docs/vertical-slice.md), and [docs/google-flow-provider.md](./docs/google-flow-provider.md). Live Flow validation is blocked/not run.
+- **Status note:** D-001–D-012 record Phase 0 architecture/research decisions, D-013–D-018 record Phase 1 implementation choices, D-019–D-022 record Phase 2 provider choices, D-023–D-027 record the Phase 3 application-service and operator-surface choices, and D-028–D-035 record the Phase 4A creative planning domain. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/vertical-slice.md](./docs/vertical-slice.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [docs/application-services.md](./docs/application-services.md), and [docs/planning-domain.md](./docs/planning-domain.md). Live Flow validation is blocked/not run.
 
 ## D-001 — Google Flow is a replaceable provider, not the product core
 
@@ -245,3 +245,75 @@
 - **Decision:** `apps/cli` gains subcommands (`project`, `scene`, `generate`, `status`, `queue`, `cancel`, `retry`, `review`, `production`, `provider`) that call only the services. Human and `--json` output are the same projections; errors carry stable codes (`READINESS_NOT_SATISFIED`, `PROVIDER_COVERAGE_INCOMPLETE`, `RETRY_BLOCKED_UNSAFE_STATE`, …) and exit codes `0/1/2/3`. The flag-only Phase 1 invocation still runs the vertical slice unchanged. Execution is on demand, never a daemon; a future UI must consume these read models and persisted IDs.
 - **Reason:** Delivers operator leverage with no new trust boundary, keeps deterministic CI (no browser, no Google account), and preserves the documented Phase 1 contract.
 - **Trade-offs:** No graphical review; JSON read models are the contract for the next surface.
+
+## D-028 — Creative planning is a domain above the execution spine, not a second pipeline
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** Phases 1–3 execute work: a scene version becomes a job, a queue item, a provider call, an asset, QC, and review. Creative intent needed a durable home, and the tempting shortcut was to model "plan" as a batch of scenes (or to auto-enqueue from a plan) so that planning data would reuse the existing tables directly.
+- **Options:** Store plans as scene rows with a flag; let a plan version enqueue jobs on approval; or introduce a planning domain that owns its own tables, lifecycle, and read models and maps *downward* through the existing services.
+- **Decision:** `ScenePlan` is a distinct concept from `Scene`/`SceneVersion`, and creating one never creates a job, queue item, or asset. The execution boundary is one-directional and explicit — validate → approve → mark executable → read-only execution preview → the existing Phase 3 commands — with no second execution engine, no parallel queue, and no automatic submission anywhere in Phase 4A. Tests assert an empty job table and an empty queue after a complete lifecycle.
+- **Reason:** Keeping the two domains separate preserves every Phase 1–3 guarantee (leases, attempts, idempotency, capability admission, review authority) as the only path to a provider, and it means a planner in 4B/4C can only ever *propose* work that still passes the same gates a human-written plan must pass.
+- **Trade-offs:** The plan graph and the execution graph are two sets of tables that must be kept consistent by service-level rules rather than by one shared row; a scene plan cannot be executed until it is mapped, which is deliberate friction.
+
+## D-029 — The plan *version* owns the lifecycle; approved content is copied, never edited
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** A plan is revised repeatedly while its outputs are already in flight, and an approval must stay attributable to the exact content that was approved. Putting the status on the plan row would make "approved" drift as soon as a scene is edited.
+- **Options:** Status on the plan with editable children; mutate approved versions in place and log a diff; or make the version the consistency boundary, with revisions as copies.
+- **Decision:** `DRAFT → VALIDATED → APPROVED → EXECUTABLE → ARCHIVED` lives on `production_plan_versions`, defined by `PLAN_VERSION_STATUS_TRANSITIONS` in core, re-checked by compare-and-set writes in storage, and enforced again by v4 database triggers. Child writes are refused (`PLAN_NOT_EDITABLE`, and at the database level via `<table>_requires_editable_plan_version_*`) unless the version is `DRAFT`/`VALIDATED`. `revise` copies story, cast, scene plans, and specs into `version_number + 1` with `predecessor_version_id`, and `sceneKey` carries per-scene identity across versions; an approved version keeps its content, findings, and hash forever.
+- **Reason:** Approval becomes a statement about an immutable snapshot, the history is queryable instead of reconstructed, and no destructive migration or in-place rewrite of approved creative decisions is possible.
+- **Trade-offs:** Copies cost storage and a version-copy transaction; operators must reopen or revise rather than "just fix a typo" on an approved version.
+
+## D-030 — Planning state is normalized relational tables, not an opaque JSON blob
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** A plan version is a tree of story, cast, scene plans, and specs. A single JSON column would make versioning trivial to write and would need no migration, but uniqueness, referential integrity, per-child idempotency, and operator queries would all move into application code.
+- **Options:** One `plan_json` blob per version; a blob plus an index table; or normalized tables per concept with foreign keys and uniqueness.
+- **Decision:** Eleven v4 tables (`creative_briefs`, `worlds`, `visual_dna`, `production_plans`, `production_plan_versions`, `plan_stories`, `plan_version_characters`, `scene_plans`, `scene_plan_characters`, `generation_specs`, `plan_validations`) with foreign keys, indexes on project/plan/version, uniqueness that encodes version semantics (`UNIQUE(project_id, version_number)`, `UNIQUE(plan_id, version_number)`, `UNIQUE(plan_version_id, scene_number)`, `UNIQUE(plan_version_id, scene_key)`, `UNIQUE(scene_plan_id, spec_number)`), and partial-unique idempotency keys. Only genuinely leaf payloads (constraints, palettes, continuity statements, planned outputs, findings) are JSON columns, encoded with the existing canonical `stableJson`. One `SqlitePlanningRepository` is constructed from the existing `SqliteJobRepository`'s connection, so a single database owns all durable state and aggregate writes stay one `.immediate()` transaction.
+- **Reason:** The database can then enforce exactly what the domain promises — no duplicate scene order, no orphan spec, no child of an approved version changing, no pointer to another plan's version — and the operator read models query scenes, specs, and cast without deserializing a whole aggregate.
+- **Trade-offs:** More migrations and more SQL than a blob; aggregate loads are explicit joins. Content hashing keeps the "read the whole version" operation cheap to verify.
+
+## D-031 — Capability requirements reuse `ProviderCapabilities`, and the gate reads declarations only
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** Generation specs must say what they need from a provider (batch, references, video, frames). Phase 2 already declares provider capabilities, and a planning-specific `supportsX` flag or a pre-flight provider call would create a second source of truth — or a browser session — for something a registry already answers.
+- **Options:** Plan-specific capability booleans; probe a provider at validation time; or express requirements as `keyof ProviderCapabilities` and check them against the existing registry declarations.
+- **Decision:** `GenerationSpec.requiredCapabilities` is `readonly (keyof ProviderCapabilities)[]` (`PROVIDER_CAPABILITY_KEYS` in core is derived from that type, so the two can never drift). The validator maps spec shape to requirements (image → `imageGeneration`, video → `videoGeneration`, references → `referenceImages`, `outputCount > 1` → `batchGeneration`) and reports unsatisfiable ones as `CAPABILITY_UNAVAILABLE` findings; `markExecutable` refuses with `PLAN_CAPABILITY_UNMET` plus per-spec candidate providers. Both read `ProviderRegistry` declarations only: no provider object is constructed, no auth/session is touched, and no capability list is duplicated. `--providers CSV` (not `--provider`) names the providers allowed to serve a plan, because executability is about a *set* of candidates.
+- **Reason:** One capability model, one place to change it, and a gate that works identically for the mock provider in CI and for Google Flow, while keeping the provider boundary replaceable.
+- **Trade-offs:** Declaration-based gating can be optimistic if a provider's declared capability later fails at runtime — the queue, QC, and review stages remain the real enforcement, exactly as in Phase 3.
+
+## D-032 — Validation evidence is append-only, hash-bound, and ranked by insertion order
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** Structural validity must be provable after the fact, and a plan edited after validation must not be approvable on stale evidence. Re-running a validator under a fixed test clock or inside one millisecond also means "the latest report" needs an unambiguous definition.
+- **Options:** Store a `valid` flag on the version; overwrite one evidence row per version; or append immutable evidence keyed by content hash.
+- **Decision:** `plan_validations` rows are immutable (update/delete raise `plan validation evidence is immutable`) and unique per `(plan_version_id, validator_version, content_hash)` — a revalidation of unchanged content reuses the row and reports `evidenceReused`. Every child write recomputes `content_hash`, so `isCurrent` is derived, staleness blocks approval with `PLAN_VALIDATION_REQUIRED`, and `VALIDATION_MISSING` (never validated) stays distinct from `VALIDATION_STALE` (validated, then edited). "Latest evidence" is ordered by `created_at, rowid`, never by the random primary key, so two rows in one clock tick still rank deterministically. A failing validation moves the version back to `DRAFT` rather than throwing away the report.
+- **Reason:** Approval can always be traced to the exact findings and content it covered, and staleness is a computed property that cannot drift from its justification — mirroring how `qc_results` work for assets.
+- **Trade-offs:** Evidence rows accumulate per version (cheap, and useful as history); a passing run may insert a row even when nothing changed.
+
+## D-033 — No event bus, and no second idempotency system, for planning
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** A planning layer with briefs, definitions, versions, and validation is exactly where an internal event bus and a planning-specific dedup mechanism are usually proposed. Both were already decided against in earlier phases (`packages/events` unused, one canonical idempotency helper).
+- **Options:** Emit planning events into `packages/events` for projection building; add a planning outbox; or keep direct service orchestration and reuse the existing key derivation.
+- **Decision:** Planning services call each other and the repository directly. `packages/events` remains unused, and no dispatcher, subscriber, outbox, or daemon was introduced. Idempotency reuses `createIdempotencyKey`/`canonicalize`/`stableJson` with a `plan:` prefix, stored in each table's partial-unique `idempotency_key` column; the derived keys are documented in [docs/planning-domain.md](./docs/planning-domain.md) §8. A same-key/different-content attempt still fails with `IDEMPOTENCY_CONFLICT`, and lifecycle transitions remain compare-and-set.
+- **Reason:** Direct calls keep one transaction, one error path, and one retry story; a second dedup scheme would give operators two ways to describe the same intent.
+- **Trade-offs:** Fan-out for a future UI or webhook will need a deliberate outbox decision, and read models recompute rather than project from a stream.
+
+## D-034 — Reuse the character identity and pin immutable snapshots instead of duplicating types
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** Planning needs characters, worlds, Visual DNA, and creative intent. `characters` already exists as a stable project-scoped identity table, and briefs/worlds/DNA could each be stored as one mutable row per project.
+- **Options:** A parallel `planning_characters` table; a `planning_*` JSON copy of the execution rows; or additive columns plus per-plan cast links, with project definitions as immutable versioned snapshots.
+- **Decision:** Characters are the same rows, extended additively (`traits_json`, `visual_identity_json`) in the v4 migration; the per-plan `role` lives on the `plan_version_characters`/`scene_plan_characters` links so one identity can recur across scenes and versions. Creative briefs, worlds, and Visual DNA are versioned immutable snapshots (`ACTIVE`/`SUPERSEDED`, `UNIQUE(project_id, name, version_number)`), and a plan version references them **by ID**, so `plan revise` and revalidation reproduce the inputs the plan was authored against even after a newer snapshot exists. A cross-project reference is refused by trigger, and reusing a brief id from another project raises `Creative brief belongs to another project.`
+- **Reason:** One identity per concept in the system keeps execution provenance, review, and planning consistent; snapshot pinning is what makes an approved version reproducible rather than "approved against whatever the brief says now".
+- **Trade-offs:** Two representations of "a character" (identity + per-version role) instead of one denormalized row, and updating a brief means creating a new snapshot rather than editing one.
+
+## D-035 — Read models never throw for legitimately absent state
+
+- **Date / status:** 2026-10-04 · Accepted and tested (Phase 4A)
+- **Context:** The first end-to-end CLI walkthrough crashed: `plan status` on a fresh `DRAFT` plan failed with `NOT_FOUND` because the read model required validation evidence that does not exist yet — and an operator's most common question is exactly "what is the state of this plan right now?".
+- **Options:** Make callers pre-check for evidence; return an empty synthetic report; or return a nullable view and reserve the throwing variant for paths that require evidence.
+- **Decision:** `PlanningReadService.validationView` returns `PlanValidationView | null`, and `requireValidationView` throws `NOT_FOUND` for the transitions that genuinely need evidence (`approve`, `markExecutable`, the `validate` report projection). `planValidation` reads tolerate `null` briefs, stories, and validations and express the gap as a blocker (`VALIDATION_MISSING`) plus a next action (`AUTHOR_PLAN`/`VALIDATE_PLAN`). A CLI renderer that had a no-op conditional and a trailing blank line was fixed in the same pass, because operator output is part of the contract.
+- **Reason:** Absence of un-started work is information, not an error; the state machine already refuses the actions that require evidence.
+- **Trade-offs:** Read paths carry a nullable type, and a caller that *should* have evidence must remember to use the `require…` variant.

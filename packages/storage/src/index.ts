@@ -28,6 +28,14 @@ import {
   type SceneVersionRecord,
 } from "@flowforge/core";
 import { migrateDatabase } from "./migrations.js";
+import {
+  createIdempotencyKey,
+  decodeJson,
+  decodeOptionalJson,
+  encodeOptionalJson,
+  requiredText,
+  stableJson,
+} from "./internal.js";
 
 export class SqliteJobRepository {
   private readonly db: Database.Database;
@@ -42,6 +50,16 @@ export class SqliteJobRepository {
 
   getSchemaVersion(): number {
     return Number(this.db.pragma("user_version", { simple: true }));
+  }
+
+  /**
+   * The migrated connection behind this repository. Exposed so additional repositories
+   * (currently `SqlitePlanningRepository`) can compose over the *same* SQLite connection instead
+   * of opening a second handle to the file. Callers must not run SQL against it directly; only the
+   * repositories own writes.
+   */
+  get database(): Database.Database {
+    return this.db;
   }
 
   createProject(input: CreateProjectInput): ProjectRecord {
@@ -1681,54 +1699,6 @@ function reviewFromRow(row: ReviewRow): ReviewRecord {
   };
 }
 
-function requiredText(value: string, label: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) throw new Error(`${label} is required.`);
-  return trimmed;
-}
-
-function encodeOptionalJson(value: Record<string, unknown> | undefined): string | null {
-  return value === undefined ? null : stableJson(value);
-}
-
-function decodeOptionalJson(value: string | null): Record<string, unknown> | undefined {
-  return value === null ? undefined : decodeJson<Record<string, unknown>>(value, {});
-}
-
-function decodeJson<T>(value: string, fallback: T): T {
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-function canonicalize(value: unknown): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error("Generation parameters must contain finite numbers.");
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) {
-      if (record[key] !== undefined) sorted[key] = canonicalize(record[key]);
-    }
-    return sorted;
-  }
-  throw new Error(`Unsupported value in JSON data: ${typeof value}`);
-}
-
-function createIdempotencyKey(identityJson: string): string {
-  return createHash("sha256").update(`flowforge:generation:v1:${identityJson}`).digest("hex");
-}
-
 function hashFileSha256(path: string): string {
   const hash = createHash("sha256");
   const fd = openSync(path, "r");
@@ -1744,3 +1714,5 @@ function hashFileSha256(path: string): string {
     closeSync(fd);
   }
 }
+
+export * from "./planning.js";

@@ -1,6 +1,6 @@
 import type { GenerationProvider } from "@flowforge/core";
 import type { LocalQueueWorker, SqliteJobQueue } from "@flowforge/queue";
-import type { SqliteJobRepository } from "@flowforge/storage";
+import type { SqliteJobRepository, SqlitePlanningRepository } from "@flowforge/storage";
 
 /**
  * The exact persistence surface the application layer is allowed to use. Keeping this as a
@@ -14,6 +14,8 @@ export type JobRepository = Pick<
   SqliteJobRepository,
   // Projects and scenes
   | "createProject"
+  // Character identities: the planning domain extends this table rather than duplicating it.
+  | "createCharacter"
   | "getProject"
   | "listProjects"
   | "updateProjectStatus"
@@ -67,3 +69,54 @@ export type WorkerPort = Pick<LocalQueueWorker, "workerId" | "runOnce" | "runUnt
 export type ProviderDescriptor = Pick<GenerationProvider, "id" | "capabilities">;
 
 export type ProviderRegistry = ReadonlyMap<string, ProviderDescriptor>;
+
+/**
+ * Persistence surface of the creative planning domain. Like `JobRepository` this is a structural
+ * `Pick`, so the planning services can only use reviewed write methods, and a test may supply a
+ * partial fake. The repository owns the transactions; the services own the decisions.
+ */
+export type PlanningRepository = Pick<
+  SqlitePlanningRepository,
+  // Briefs and project definitions
+  | "createBrief"
+  | "getBrief"
+  | "listBriefs"
+  | "currentBrief"
+  | "createWorld"
+  | "getWorld"
+  | "listWorlds"
+  | "createVisualDna"
+  | "getVisualDna"
+  | "listVisualDna"
+  | "setCharacterIdentity"
+  | "getCharacter"
+  | "listProjectCharacters"
+  // Aggregate
+  | "createPlanWithInitialVersion"
+  | "getPlan"
+  | "listPlans"
+  | "getPlanVersion"
+  | "getPlanVersionByNumber"
+  | "listPlanVersions"
+  | "setPlanCurrentVersion"
+  | "transitionPlanVersionStatus"
+  | "copyPlanVersion"
+  // Children
+  | "upsertStory"
+  | "replacePlanCast"
+  | "getScenePlan"
+  | "getGenerationSpec"
+  | "addScenePlan"
+  | "updateScenePlan"
+  | "deleteScenePlan"
+  | "replaceScenePlanCast"
+  | "addGenerationSpec"
+  | "deleteGenerationSpec"
+  // Evidence and aggregate reads
+  | "recordPlanValidation"
+  | "getLatestPlanValidation"
+  | "getPlanValidation"
+  | "listPlanValidations"
+  | "loadPlanVersionSnapshot"
+  | "planVersionContentHash"
+>;

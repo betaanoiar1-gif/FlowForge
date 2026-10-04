@@ -86,6 +86,14 @@ export function isoTimestamp(value: unknown, field: string): string | undefined 
   return new Date(text).toISOString();
 }
 
+/** Bounded list of non-empty free-text entries (themes, constraints, palette entries, rules). */
+export function textList(value: unknown, field: string, max = 64): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) fail(`${field} must be an array of strings.`, field);
+  if (value.length > max) fail(`${field} may hold at most ${max} entries.`, field);
+  return value.map((entry, index) => requiredText(entry, `${field}[${index}]`, 1_000));
+}
+
 export const LIMITS = Object.freeze({
   maxTextLength: MAX_TEXT_LENGTH,
   maxReferences: MAX_REFERENCES,

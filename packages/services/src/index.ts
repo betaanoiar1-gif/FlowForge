@@ -46,6 +46,7 @@ export type {
 } from "./commands.js";
 export type {
   JobRepository,
+  PlanningRepository,
   ProviderDescriptor,
   ProviderRegistry,
   QueuePort,
@@ -98,3 +99,51 @@ export {
   toSceneVersionSummary,
 } from "./projections.js";
 export { LIMITS } from "./validation.js";
+export {
+  CreativeBriefService,
+  PlanningDefinitionService,
+  PlanningReadService,
+  PlanningValidationService,
+  ProductionPlanService,
+  planningNotConfigured,
+} from "./planning.js";
+export {
+  MAX_SPEC_OUTPUT_COUNT,
+  MIN_SPEC_DURATION_MS,
+  PLAN_ASPECT_RATIO_PATTERN,
+  sortFindings,
+  summarizePlanFindings,
+  validatePlanVersion,
+  type PlanValidationOptions,
+  type PlanValidationSummary,
+} from "./plan-validation.js";
+export type {
+  AddGenerationSpecCommand,
+  AddScenePlanCommand,
+  CreateBriefCommand,
+  CreatePlanCommand,
+  CreatePlanningCharacterCommand,
+  CreateVisualDnaCommand,
+  CreateWorldCommand,
+  PlanLifecycleCommand,
+  PlanVersionTarget,
+  SetPlanCastCommand,
+  SetPlanStoryCommand,
+  SetScenePlanCastCommand,
+} from "./commands.js";
+export type {
+  ExecutionPreview,
+  ExecutionPreviewItem,
+  PlanApprovalView,
+  PlanCapabilityCoverage,
+  PlanCastRow,
+  PlanDetail,
+  PlanExecutabilityView,
+  PlanListItem,
+  PlanningCounts,
+  PlanningNextAction,
+  PlanScenePlanRow,
+  PlanValidationView,
+  PlanVisualDnaResolution,
+  ProjectPlanningOverview,
+} from "./planning-read-models.js";
