@@ -200,7 +200,41 @@ export class SqliteJobRepository {
   }
 
 
-  getRetryState(jobId: string, defaultMaxRetries = 3): RetryState {\n    const job = this.get(jobId);\n    if (!job) throw new Error(`Generation job not found: ${jobId}`);\n    const row = this.db.prepare("SELECT retry_count, max_retries, updated_at FROM generation_retry_state WHERE job_id = ?").get(jobId) as RetryStateRow | undefined;\n    if (row) return { jobId, retryCount: row.retry_count, maxRetries: row.max_retries, updatedAt: row.updated_at };\n    const now = new Date().toISOString();\n    this.db.prepare("INSERT INTO generation_retry_state (job_id, retry_count, max_retries, updated_at) VALUES (?, 0, ?, ?)").run(jobId, defaultMaxRetries, now);\n    return { jobId, retryCount: 0, maxRetries: defaultMaxRetries, updatedAt: now };\n  }\n\n  requestRetry(jobId: string, maxRetries = 3): RetryState {\n    const job = this.get(jobId);\n    if (!job) throw new Error(`Generation job not found: ${jobId}`);\n    if (job.status === "COMPLETED") throw new Error(`Cannot retry completed job ${jobId}`);\n    if (job.status === "CANCELLED") throw new Error(`Cannot retry cancelled job ${jobId}`);\n    if (job.status !== "FAILED") throw new Error(`Cannot retry job ${jobId} from status ${job.status}`);\n    if (!Number.isInteger(maxRetries) || maxRetries < 0) throw new Error("maxRetries must be a non-negative integer");\n    const current = this.getRetryState(jobId, maxRetries);\n    if (current.retryCount >= current.maxRetries) throw new Error(`Retry limit exhausted for job ${jobId}: ${current.retryCount}/${current.maxRetries}`);\n    const now = new Date().toISOString();\n    const next = current.retryCount + 1;\n    const tx = this.db.transaction(() => {\n      this.db.prepare("UPDATE generation_retry_state SET retry_count = ?, updated_at = ? WHERE job_id = ?").run(next, now, jobId);\n      if (job.externalId) {\n        this.db.prepare("UPDATE generation_jobs SET status = ?, error = NULL, updated_at = ? WHERE id = ?").run("GENERATING", now, jobId);\n        this.db.prepare("DELETE FROM queue_entries WHERE job_id = ?").run(jobId);\n      } else {\n        this.db.prepare("INSERT INTO queue_entries (job_id, enqueued_at) VALUES (?, ?) ON CONFLICT(job_id) DO UPDATE SET enqueued_at = excluded.enqueued_at").run(jobId, now);\n      }\n    });\n    tx();\n    return this.getRetryState(jobId);\n  }\n\n  enqueue(jobId: string): QueueEntry {
+  getRetryState(jobId: string, defaultMaxRetries = 3): RetryState {
+    const job = this.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+    const row = this.db.prepare("SELECT retry_count, max_retries, updated_at FROM generation_retry_state WHERE job_id = ?").get(jobId) as RetryStateRow | undefined;
+    if (row) return { jobId, retryCount: row.retry_count, maxRetries: row.max_retries, updatedAt: row.updated_at };
+    const now = new Date().toISOString();
+    this.db.prepare("INSERT INTO generation_retry_state (job_id, retry_count, max_retries, updated_at) VALUES (?, 0, ?, ?)").run(jobId, defaultMaxRetries, now);
+    return { jobId, retryCount: 0, maxRetries: defaultMaxRetries, updatedAt: now };
+  }
+
+  requestRetry(jobId: string, maxRetries = 3): RetryState {
+    const job = this.get(jobId);
+    if (!job) throw new Error(`Generation job not found: ${jobId}`);
+    if (job.status === "COMPLETED") throw new Error(`Cannot retry completed job ${jobId}`);
+    if (job.status === "CANCELLED") throw new Error(`Cannot retry cancelled job ${jobId}`);
+    if (job.status !== "FAILED") throw new Error(`Cannot retry job ${jobId} from status ${job.status}`);
+    if (!Number.isInteger(maxRetries) || maxRetries < 0) throw new Error("maxRetries must be a non-negative integer");
+    const current = this.getRetryState(jobId, maxRetries);
+    if (current.retryCount >= current.maxRetries) throw new Error(`Retry limit exhausted for job ${jobId}: ${current.retryCount}/${current.maxRetries}`);
+    const now = new Date().toISOString();
+    const next = current.retryCount + 1;
+    const tx = this.db.transaction(() => {
+      this.db.prepare("UPDATE generation_retry_state SET retry_count = ?, updated_at = ? WHERE job_id = ?").run(next, now, jobId);
+      if (job.externalId) {
+        this.db.prepare("UPDATE generation_jobs SET status = ?, error = NULL, updated_at = ? WHERE id = ?").run("GENERATING", now, jobId);
+        this.db.prepare("DELETE FROM queue_entries WHERE job_id = ?").run(jobId);
+      } else {
+        this.db.prepare("INSERT INTO queue_entries (job_id, enqueued_at) VALUES (?, ?) ON CONFLICT(job_id) DO UPDATE SET enqueued_at = excluded.enqueued_at").run(jobId, now);
+      }
+    });
+    tx();
+    return this.getRetryState(jobId);
+  }
+
+  enqueue(jobId: string): QueueEntry {
     const job = this.get(jobId);
 
     if (!job) {
@@ -213,7 +247,9 @@ export class SqliteJobRepository {
       );
     }
 
-    if (job.status === "FAILED" && job.externalId) { throw new Error(`Cannot enqueue failed job ${jobId} with an externalId; use retry recovery`); }\n\n    const enqueuedAt = new Date().toISOString();
+    if (job.status === "FAILED" && job.externalId) { throw new Error(`Cannot enqueue failed job ${jobId} with an externalId; use retry recovery`); }
+
+    const enqueuedAt = new Date().toISOString();
 
     this.db.prepare(`
       INSERT INTO queue_entries (job_id, enqueued_at)
@@ -546,7 +582,11 @@ export interface AttachCharacterToSceneInput {
   role?: string;
 }
 
-export interface RetryState { jobId: string; retryCount: number; maxRetries: number; updatedAt: string; }\n\ninterface RetryStateRow { retry_count: number; max_retries: number; updated_at: string; }\n\nexport interface QueueEntry {
+export interface RetryState { jobId: string; retryCount: number; maxRetries: number; updatedAt: string; }
+
+interface RetryStateRow { retry_count: number; max_retries: number; updated_at: string; }
+
+export interface QueueEntry {
   jobId: string;
   enqueuedAt: string;
 }
