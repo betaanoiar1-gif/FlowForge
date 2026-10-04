@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --import tsx test/prompt-compiler.test.ts"
+    "test": "pnpm build && node test/prompt-compiler.test.mjs"
   },
   "dependencies": {
     "@flowforge/core": "workspace:*",
@@ -14,7 +14,6 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },
   "exports": {
