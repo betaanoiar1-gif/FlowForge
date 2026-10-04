@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node test/provider-execution-worker.test.mjs && node test/execution-events.test.mjs && node test/provider-completion-worker.test.mjs && node test/provider-download-worker.test.mjs"
+    "test": "pnpm build && node test/provider-execution-worker.test.mjs && node test/execution-events.test.mjs && node test/provider-completion-worker.test.mjs && node test/provider-download-worker.test.mjs && node test/provider-validation-worker.test.mjs"
   },
   "dependencies": {
     "@flowforge/core": "workspace:*",
