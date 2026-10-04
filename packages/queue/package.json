@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@flowforge/core": "workspace:*",
+    "@flowforge/events": "workspace:*",
     "@flowforge/storage": "workspace:*"
   },
   "devDependencies": {
