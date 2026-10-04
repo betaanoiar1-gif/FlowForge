@@ -1,0 +1,22 @@
+name: Phase 1B
+
+on:
+  push:
+    branches:
+      - phase/1b-generation-request-builder
+
+jobs:
+  generation-request-builder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @flowforge/compiler... build
+      - run: pnpm --filter @flowforge/compiler test
