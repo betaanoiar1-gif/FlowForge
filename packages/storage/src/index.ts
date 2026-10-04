@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import type { GenerationJob, GenerationRequest, JobStatus } from "@flowforge/core";
 import { assertTransition } from "@flowforge/core";
 
@@ -30,6 +32,33 @@ export class SqliteJobRepository {
         enqueued_at TEXT NOT NULL,
         FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS assets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        scene_id TEXT,
+        job_id TEXT,
+        kind TEXT NOT NULL,
+        path TEXT NOT NULL,
+        mime_type TEXT,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        provider TEXT,
+        external_id TEXT,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (job_id) REFERENCES generation_jobs(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_assets_project
+        ON assets(project_id);
+      CREATE INDEX IF NOT EXISTS idx_assets_scene
+        ON assets(scene_id);
+      CREATE INDEX IF NOT EXISTS idx_assets_job
+        ON assets(job_id);
+      CREATE INDEX IF NOT EXISTS idx_assets_sha256
+        ON assets(sha256);
     `);
   }
 
@@ -165,6 +194,81 @@ export class SqliteJobRepository {
     return row.count;
   }
 
+  registerAsset(input: RegisterAssetInput): AssetRecord {
+    if (!existsSync(input.path)) {
+      throw new Error(`Asset file does not exist: ${input.path}`);
+    }
+
+    const stats = statSync(input.path);
+
+    if (!stats.isFile()) {
+      throw new Error(`Asset path is not a file: ${input.path}`);
+    }
+
+    const sha256 = hashFileSha256(input.path);
+    const now = new Date().toISOString();
+
+    this.db.prepare(`
+      INSERT INTO assets (
+        id, project_id, scene_id, job_id, kind, path, mime_type,
+        size_bytes, sha256, provider, external_id, metadata_json,
+        created_at, updated_at
+      )
+      VALUES (
+        @id, @projectId, @sceneId, @jobId, @kind, @path, @mimeType,
+        @sizeBytes, @sha256, @provider, @externalId, @metadata,
+        @createdAt, @updatedAt
+      )
+    `).run({
+      id: input.id,
+      projectId: input.projectId,
+      sceneId: input.sceneId ?? null,
+      jobId: input.jobId ?? null,
+      kind: input.kind,
+      path: input.path,
+      mimeType: input.mimeType ?? null,
+      sizeBytes: stats.size,
+      sha256,
+      provider: input.provider ?? null,
+      externalId: input.externalId ?? null,
+      metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return this.getAsset(input.id)!;
+  }
+
+  getAsset(id: string): AssetRecord | null {
+    const row = this.db.prepare(
+      "SELECT * FROM assets WHERE id = ?",
+    ).get(id) as AssetRow | undefined;
+
+    return row ? assetFromRow(row) : null;
+  }
+
+  findAssetsBySha256(sha256: string): AssetRecord[] {
+    const rows = this.db.prepare(`
+      SELECT *
+      FROM assets
+      WHERE sha256 = ?
+      ORDER BY created_at ASC
+    `).all(sha256) as AssetRow[];
+
+    return rows.map(assetFromRow);
+  }
+
+  listProjectAssets(projectId: string): AssetRecord[] {
+    const rows = this.db.prepare(`
+      SELECT *
+      FROM assets
+      WHERE project_id = ?
+      ORDER BY created_at ASC
+    `).all(projectId) as AssetRow[];
+
+    return rows.map(assetFromRow);
+  }
+
   close(): void {
     this.db.close();
   }
@@ -175,9 +279,57 @@ export interface QueueEntry {
   enqueuedAt: string;
 }
 
+export interface RegisterAssetInput {
+  id: string;
+  projectId: string;
+  sceneId?: string;
+  jobId?: string;
+  kind: string;
+  path: string;
+  mimeType?: string;
+  provider?: string;
+  externalId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AssetRecord {
+  id: string;
+  projectId: string;
+  sceneId?: string;
+  jobId?: string;
+  kind: string;
+  path: string;
+  mimeType?: string;
+  sizeBytes: number;
+  sha256: string;
+  provider?: string;
+  externalId?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+
 interface QueueRow {
   job_id: string;
   enqueued_at: string;
+}
+
+interface AssetRow {
+  id: string;
+  project_id: string;
+  scene_id: string | null;
+  job_id: string | null;
+  kind: string;
+  path: string;
+  mime_type: string | null;
+  size_bytes: number;
+  sha256: string;
+  provider: string | null;
+  external_id: string | null;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 interface JobRow {
@@ -214,4 +366,47 @@ function fromRow(row: JobRow): GenerationJob {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function assetFromRow(row: AssetRow): AssetRecord {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sceneId: row.scene_id ?? undefined,
+    jobId: row.job_id ?? undefined,
+    kind: row.kind,
+    path: row.path,
+    mimeType: row.mime_type ?? undefined,
+    sizeBytes: row.size_bytes,
+    sha256: row.sha256,
+    provider: row.provider ?? undefined,
+    externalId: row.external_id ?? undefined,
+    metadata: row.metadata_json
+      ? JSON.parse(row.metadata_json) as Record<string, unknown>
+      : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function hashFileSha256(path: string): string {
+  const hash = createHash("sha256");
+  const fd = openSync(path, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+
+  try {
+    let bytesRead: number;
+
+    do {
+      bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+
+      if (bytesRead > 0) {
+        hash.update(buffer.subarray(0, bytesRead));
+      }
+    } while (bytesRead > 0);
+
+    return hash.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
 }
