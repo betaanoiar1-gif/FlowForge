@@ -148,3 +148,96 @@ export class ProviderExecutionWorker {
     }
   }
 }
+
+export interface ProviderCompletionResult {
+  jobId: string;
+  status: JobStatus;
+  externalId: string;
+  result: Awaited<ReturnType<ProviderAdapter["waitForCompletion"]>>;
+}
+
+export class ProviderCompletionWorker {
+  constructor(
+    private readonly repository: SqliteJobRepository,
+    private readonly resolveProvider: ProviderResolver,
+    private readonly events?: EventPublisher,
+  ) {}
+
+  async runOnce(jobId: string): Promise<ProviderCompletionResult | null> {
+    const job = this.repository.get(jobId);
+
+    if (!job) {
+      throw new Error(`Generation job not found: ${jobId}`);
+    }
+
+    if (job.status !== "GENERATING") {
+      throw new Error(
+        `Completion worker cannot start job ${job.id} from ${job.status}`,
+      );
+    }
+
+    if (!job.externalId) {
+      throw new Error(`Generation job ${job.id} has no externalId`);
+    }
+
+    const provider = this.resolveProvider(job.request.provider);
+
+    if (!provider) {
+      const reason = `Provider not registered: ${job.request.provider}`;
+      this.repository.transition(job.id, "FAILED", reason);
+      this.events?.publish({
+        type: "generation.failed",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        reason,
+      });
+      return null;
+    }
+
+    try {
+      const result = await provider.waitForCompletion(job.externalId);
+
+      if (result.jobId !== job.id) {
+        throw new Error(
+          `Provider result jobId mismatch: expected ${job.id}, got ${result.jobId}`,
+        );
+      }
+
+      if (result.provider !== provider.id) {
+        throw new Error(
+          `Provider result provider mismatch: expected ${provider.id}, got ${result.provider}`,
+        );
+      }
+
+      const updated = this.repository.transition(job.id, "VERIFYING");
+      this.events?.publish({
+        type: "generation.verifying",
+        at: new Date().toISOString(),
+        jobId: job.id,
+        externalId: job.externalId,
+      });
+
+      return {
+        jobId: updated.id,
+        status: updated.status,
+        externalId: job.externalId,
+        result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const current = this.repository.get(job.id);
+
+      if (current && current.status !== "FAILED") {
+        this.repository.transition(job.id, "FAILED", message);
+        this.events?.publish({
+          type: "generation.failed",
+          at: new Date().toISOString(),
+          jobId: job.id,
+          reason: message,
+        });
+      }
+
+      return null;
+    }
+  }
+}
