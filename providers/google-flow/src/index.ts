@@ -176,12 +176,16 @@ const PROMPT_QUERY: SemanticQuery = {
   enabled: true,
 };
 const GENERATE_QUERY: SemanticQuery = {
-  name: /^(?:Generate|Construction begins)$/i,
+  role: "button",
+  text: "arrow_forward",
   visible: true,
   enabled: true,
 };
+
 const GENERATE_CONTROL_QUERY: SemanticQuery = {
-  ...GENERATE_QUERY,
+  role: "button",
+  text: "arrow_forward",
+  visible: true,
   enabled: undefined,
   includeDisabled: true,
 };
@@ -850,12 +854,18 @@ export class GoogleFlowProvider implements ProviderAdapter {
         this.browser.resolve(PROMPT_QUERY),
         this.browser.resolve(GENERATE_CONTROL_QUERY),
       ]);
-      const mode = selectedMode(observation);
-      if (prompt.matched && generate.matched && mode) {
-        return { inspection: { ...inspectionBase, status: "READY" }, observation, mode };
+      if (prompt.matched && generate.matched) {
+        return { inspection: { ...inspectionBase, status: "READY" }, observation };
       }
+
+      const mode = selectedMode(observation);
+
       return {
-        inspection: { ...inspectionBase, status: "UI_CHANGED", reasonCode: missingControlReason(prompt.matched, generate.matched, mode) },
+        inspection: {
+          ...inspectionBase,
+          status: "UI_CHANGED",
+          reasonCode: missingControlReason(prompt.matched, generate.matched, mode),
+        },
         observation,
       };
     } catch {
@@ -1347,9 +1357,21 @@ function validateRequest(request: GenerationProviderRequest): void {
 }
 
 function isGoogleFlowUrl(url: URL): boolean {
-  return url.protocol === "https:" &&
-    url.hostname.toLowerCase() === "labs.google" &&
-    /^\/fx\/tools\/flow(?:\/|$)/.test(url.pathname);
+  if (url.protocol !== "https:") {
+    return false;
+  }
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (hostname === "labs.google") {
+    return /^\/fx\/tools\/flow(?:\/|$)/.test(url.pathname);
+  }
+
+  if (hostname === "flow.google.com") {
+    return true;
+  }
+
+  return false;
 }
 
 function sanitizeUrl(value: string): string | undefined {

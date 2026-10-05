@@ -430,7 +430,10 @@ export class CdpBrowserGateway implements BrowserGateway {
     const beforeValue = await locator.evaluate((element) => {
       const target = element as HTMLElement;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return target.value;
-      if (target.isContentEditable) return target.innerText;
+      if (target.isContentEditable) {
+        const text = target.innerText;
+        return text.trim() === "" ? "" : text;
+      }
       return target.textContent ?? "";
     });
     if (options.expectedBeforeValue !== undefined && beforeValue !== options.expectedBeforeValue) {
@@ -465,7 +468,10 @@ export class CdpBrowserGateway implements BrowserGateway {
       afterValue = await locator.evaluate((element) => {
         const target = element as HTMLElement;
         if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return target.value;
-        if (target.isContentEditable) return target.innerText;
+        if (target.isContentEditable) {
+          const text = target.innerText;
+          return text.trim() === "" ? "" : text;
+        }
         return target.textContent ?? "";
       }).catch(() => afterValue);
       if (afterValue === value) {

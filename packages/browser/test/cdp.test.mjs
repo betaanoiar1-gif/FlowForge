@@ -74,7 +74,32 @@ class FakePage {
           },
           async hover() { page.hovered += 1; },
           async fill(value) { page.value = value; },
-          async evaluate() { return page.value; },
+          async evaluate(callback) {
+            const target = {
+              isContentEditable: true,
+              innerText: page.value,
+              textContent: page.value,
+            };
+
+            const previousInput = globalThis.HTMLInputElement;
+            const previousTextarea = globalThis.HTMLTextAreaElement;
+
+            class FakeInputElement {}
+            class FakeTextAreaElement {}
+
+            globalThis.HTMLInputElement = FakeInputElement;
+            globalThis.HTMLTextAreaElement = FakeTextAreaElement;
+
+            try {
+              return callback(target);
+            } finally {
+              if (previousInput === undefined) delete globalThis.HTMLInputElement;
+              else globalThis.HTMLInputElement = previousInput;
+
+              if (previousTextarea === undefined) delete globalThis.HTMLTextAreaElement;
+              else globalThis.HTMLTextAreaElement = previousTextarea;
+            }
+          },
         };
       },
     };
@@ -348,6 +373,27 @@ test("fill uses a before-value guard and read-back verification; hover uses the 
   assert.equal("afterValue" in filled, false, "fill results must not expose editable text");
   assert.equal(await gateway.hover({ role: "button", name: "Continue" }), true);
   assert.equal(page.hovered, 1);
+});
+
+test("fill treats whitespace-only contenteditable text as an empty before-value", async () => {
+  const page = new FakePage("https://example.test");
+  page.value = "\n";
+  const { gateway } = gatewayFor([page]);
+  await gateway.connect();
+
+  const query = { role: "textbox", contenteditable: true };
+
+  const filled = await gateway.fill(
+    query,
+    "FLOWFORGE SAFE PROMPT TEST",
+    100,
+    { expectedBeforeValue: "" },
+  );
+
+  assert.equal(filled.verified, true);
+  assert.equal(page.value, "FLOWFORGE SAFE PROMPT TEST");
+  assert.equal(filled.beforeLength, 0);
+  assert.equal(filled.afterLength, "FLOWFORGE SAFE PROMPT TEST".length);
 });
 
 test("visible file chooser upload and download events save files under the requested local directory", async () => {
