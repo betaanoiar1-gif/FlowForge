@@ -182,6 +182,124 @@ async function withProvider(options, run) {
   }
 }
 
+
+test("network diagnostics persist sanitized metadata without response bodies", async () => {
+  await withProvider({}, async ({ provider, browser, directory }) => {
+    browser.startNetworkDiagnostics = async () => ({
+      async stop() {
+        return [
+          {
+            kind: "request",
+            requestId: "request-secret-id",
+            url: "https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute",
+            method: "POST",
+            resourceType: "XHR",
+            timestamp: 100,
+            body: "SECRET-REQUEST-BODY",
+          },
+          {
+            kind: "response",
+            requestId: "response-secret-id",
+            url: "https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute",
+            status: 200,
+            resourceType: "XHR",
+            timestamp: 101,
+            body: "SECRET-RESPONSE-BODY",
+          },
+        ];
+      },
+    });
+
+    process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS = "1";
+    process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_BODY = "1";
+    process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_POST_CLICK_MS = "0";
+
+    try {
+      browser.behavior = "success";
+
+      const input = request("request-key-network-persistence");
+      const handle = await provider.createGeneration(input);
+
+      const networkPath = path.join(
+        directory,
+        "records",
+        `${handle.providerJobId}.network.json`,
+      );
+
+      const network = JSON.parse(
+        await readFile(networkPath, "utf8"),
+      );
+
+      assert.equal(network.schemaVersion, 1);
+      assert.equal(network.provider, "google-flow");
+      assert.equal(network.providerJobId, handle.providerJobId);
+      assert.equal(network.recordCount, 2);
+      assert.equal(network.records.length, 2);
+
+      assert.equal(network.records[0].kind, "request");
+      assert.equal(network.records[0].method, "POST");
+      assert.equal(network.records[0].resourceType, "XHR");
+
+      assert.equal(network.records[1].kind, "response");
+      assert.equal(network.records[1].status, 200);
+      assert.equal(network.records[1].resourceType, "XHR");
+
+      const serialized = JSON.stringify(network);
+
+      assert.equal(
+        serialized.includes("SECRET-REQUEST-BODY"),
+        false,
+        "request response body must never be persisted",
+      );
+
+      assert.equal(
+        serialized.includes("SECRET-RESPONSE-BODY"),
+        false,
+        "response body must never be persisted",
+      );
+
+      assert.equal(
+        serialized.includes("request-secret-id"),
+        false,
+        "requestId must never be persisted",
+      );
+
+      assert.equal(
+        serialized.includes("response-secret-id"),
+        false,
+        "requestId must never be persisted",
+      );
+
+      const manifest = JSON.parse(
+        await readFile(
+          path.join(
+            directory,
+            "records",
+            `${handle.providerJobId}.json`,
+          ),
+          "utf8",
+        ),
+      );
+
+      assert.equal(
+        manifest.schemaVersion,
+        1,
+        "network diagnostics must not modify the recovery manifest schema",
+      );
+
+      assert.equal(
+        browser.clickCount,
+        1,
+        "diagnostics must not cause an additional Generate submission",
+      );
+    } finally {
+      delete process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS;
+      delete process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_BODY;
+      delete process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_POST_CLICK_MS;
+    }
+  });
+});
+
 test("prompt-only diagnostics clear only the exact text prepared by the same provider instance", async () => {
   await withProvider({}, async ({ provider, browser }) => {
     const preparedPrompt = "FLOWFORGE PROMPT DISCOVERY TEST";

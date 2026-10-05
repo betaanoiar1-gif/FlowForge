@@ -15,7 +15,10 @@ import type {
   SemanticInputResult,
   SemanticMatch,
   SemanticQuery,
+  NetworkDiagnosticsHandle,
+  NetworkDiagnosticsOptions,
 } from "./index.js";
+import { startNetworkDiagnostics } from "./cdp-network.js";
 
 export interface CdpBrowserGatewayOptions {
   endpoint: string;
@@ -139,6 +142,12 @@ export class CdpBrowserGateway implements BrowserGateway {
     this.browser = null;
     this.context = null;
     this.selectedTabId = null;
+  }
+
+  async startNetworkDiagnostics(
+    options: NetworkDiagnosticsOptions = {},
+  ): Promise<NetworkDiagnosticsHandle> {
+    return startNetworkDiagnostics(this.activePage(), options);
   }
 
   async state(): Promise<BrowserState> {

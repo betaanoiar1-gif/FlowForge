@@ -112,6 +112,26 @@ export interface BrowserDownload {
   fileName: string;
 }
 
+export interface NetworkDiagnosticRecord {
+  kind: "request" | "response";
+  requestId: string;
+  url: string;
+  method?: string;
+  status?: number;
+  resourceType?: string;
+  timestamp: number;
+  body?: string;
+}
+
+export interface NetworkDiagnosticsOptions {
+  captureResponseBody?: boolean;
+  maxBodyBytes?: number;
+}
+
+export interface NetworkDiagnosticsHandle {
+  stop(): Promise<NetworkDiagnosticRecord[]>;
+}
+
 export { BrowserGatewayError } from "./errors.js";
 
 export interface BrowserUpload {
@@ -145,6 +165,14 @@ export interface BrowserGateway {
   ): Promise<SemanticInputResult>;
   upload(trigger: SemanticQuery, filePaths: string[], timeoutMs?: number): Promise<BrowserUpload>;
   download(query: SemanticQuery, destinationDirectory: string, timeoutMs?: number): Promise<BrowserDownload>;
+
+  /**
+   * Optional provider-neutral network diagnostics capability.
+   * Implementations may omit this capability.
+   */
+  startNetworkDiagnostics?(
+    options?: NetworkDiagnosticsOptions,
+  ): Promise<NetworkDiagnosticsHandle>;
 }
 
 export { CdpBrowserGateway } from "./cdp.js";

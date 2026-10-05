@@ -136,6 +136,22 @@ interface RecoveryBaseline {
   sessionId?: string;
 }
 
+interface PersistedNetworkDiagnostics {
+  schemaVersion: 1;
+  provider: "google-flow";
+  providerJobId: string;
+  capturedAt: string;
+  recordCount: number;
+  records: Array<{
+    kind: "request" | "response";
+    url: string;
+    method?: string;
+    status?: number;
+    resourceType?: string;
+    timestamp: number;
+  }>;
+}
+
 interface FlowManifest {
   schemaVersion: 1;
   providerRequestKey: string;
@@ -203,6 +219,27 @@ const AUTH_TEXT = /sign in to continue|sign in with google|choose an account|aut
 const BLOCKED_TEXT = /captcha|unusual traffic|suspicious activity|verify (?:that )?you(?:'| a)?re human|verify it's you|security challenge|access denied|account restricted|not available in your (?:country|region)/i;
 const BUSY_TEXT = /\b(?:generating|generation in progress|processing generation|queued for generation)\b/i;
 const FAILURE_TEXT = /(?:could not|couldn't|failed to|unable to) generate|generation failed|generation error/i;
+const FLOW_NETWORK_DIAGNOSTICS_ENABLED =
+  /^(1|true|yes)$/i.test(
+    process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS ?? "",
+  );
+
+const FLOW_NETWORK_DIAGNOSTICS_CAPTURE_BODY =
+  /^(1|true|yes)$/i.test(
+    process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_BODY ?? "",
+  );
+
+const FLOW_NETWORK_DIAGNOSTICS_POST_CLICK_MS = Math.min(
+  30_000,
+  Math.max(
+    0,
+    Number.parseInt(
+      process.env.FLOWFORGE_GOOGLE_FLOW_NETWORK_DIAGNOSTICS_POST_CLICK_MS ?? "30_000",
+      10,
+    ) || 30_000,
+  ),
+);
+
 const MANIFEST_STATES = new Set<ManifestState>([
   "PREPARED", "SUBMITTING", "NOT_SUBMITTED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED",
 ]);
@@ -572,16 +609,59 @@ export class GoogleFlowProvider implements ProviderAdapter {
       );
     }
 
+    let networkDiagnostics:
+      Awaited<ReturnType<NonNullable<BrowserGateway["startNetworkDiagnostics"]>>> | null =
+        null;
+
+    if (
+      FLOW_NETWORK_DIAGNOSTICS_ENABLED &&
+      this.browser.startNetworkDiagnostics
+    ) {
+      try {
+        networkDiagnostics = await this.browser.startNetworkDiagnostics({
+          captureResponseBody: FLOW_NETWORK_DIAGNOSTICS_CAPTURE_BODY,
+          maxBodyBytes: 64 * 1024,
+        });
+      } catch {
+        // Diagnostics are strictly observational and must never block submission.
+        networkDiagnostics = null;
+      }
+    }
+
     await this.updateManifest(manifest, { state: "SUBMITTING" });
+
     let click: Awaited<ReturnType<BrowserGateway["click"]>>;
+
     try {
       click = await this.browser.click(GENERATE_QUERY, 10_000);
     } catch {
+      if (networkDiagnostics) {
+        await networkDiagnostics.stop().catch(() => []);
+      }
+
       throw providerError(
         GOOGLE_FLOW_ERROR_CODES.SUBMISSION_UNKNOWN,
         "The Generate browser action ended without a reliable dispatch result; the persisted submission will be inspected before any retry.",
         true,
         true,
+      );
+    }
+
+    if (networkDiagnostics) {
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          FLOW_NETWORK_DIAGNOSTICS_POST_CLICK_MS,
+        ),
+      );
+
+      const diagnostics = await networkDiagnostics
+        .stop()
+        .catch(() => []);
+
+      await this.persistNetworkDiagnostics(
+        manifest,
+        diagnostics,
       );
     }
     if (!click.matched) {
@@ -1034,6 +1114,75 @@ export class GoogleFlowProvider implements ProviderAdapter {
         true,
         true,
       );
+    }
+  }
+
+  /**
+   * Persists only sanitized network metadata.
+   *
+   * Response bodies are deliberately excluded from durable diagnostics even
+   * when CDP body capture is enabled. This keeps prompts, session material,
+   * account data, and server responses out of the recovery record.
+   *
+   * Diagnostics are observational only: persistence failure must never change
+   * submission/recovery semantics.
+   */
+  private async persistNetworkDiagnostics(
+    manifest: FlowManifest,
+    records: Array<{
+      kind: "request" | "response";
+      requestId: string;
+      url: string;
+      method?: string;
+      status?: number;
+      resourceType?: string;
+      timestamp: number;
+      body?: string;
+    }>,
+  ): Promise<void> {
+    const sanitized: PersistedNetworkDiagnostics = {
+      schemaVersion: 1,
+      provider: "google-flow",
+      providerJobId: manifest.providerJobId,
+      capturedAt: new Date().toISOString(),
+      recordCount: records.length,
+      records: records.map((record) => ({
+        kind: record.kind,
+        url: record.url,
+        ...(record.method === undefined ? {} : { method: record.method }),
+        ...(record.status === undefined ? {} : { status: record.status }),
+        ...(record.resourceType === undefined
+          ? {}
+          : { resourceType: record.resourceType }),
+        timestamp: record.timestamp,
+      })),
+    };
+
+    try {
+      await this.ensureDirectories();
+
+      const destination = path.join(
+        this.recordsDir,
+        `${manifest.providerJobId}.network.json`,
+      );
+
+      const temporary = `${destination}.tmp-${randomUUID()}`;
+
+      try {
+        await writeFile(
+          temporary,
+          `${JSON.stringify(sanitized, null, 2)}\n`,
+          { flag: "wx", mode: 0o600 },
+        );
+
+        await rename(temporary, destination);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    } catch {
+      // Network diagnostics are strictly observational and must never
+      // turn a successful/uncertain browser submission into a different
+      // recovery state.
     }
   }
 
