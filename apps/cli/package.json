@@ -18,6 +18,7 @@
     "@flowforge/core": "workspace:*",
     "@flowforge/provider-google-flow": "workspace:*",
     "@flowforge/provider-mock": "workspace:*",
+    "@flowforge/provider-openai-chat": "workspace:*",
     "@flowforge/queue": "workspace:*",
     "@flowforge/services": "workspace:*",
     "@flowforge/storage": "workspace:*"

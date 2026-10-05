@@ -87,10 +87,10 @@ function seedAuthoring(planning, { projectId, briefId, planId = "plan-1", planTi
   return { dna, world, ...created };
 }
 
-test("the planning tables are created additively and the schema version advances to five", async () => {
+test("the planning tables are created additively and the schema version advances to the current version", async () => {
   const harness = await createRepository();
   try {
-    assert.equal(harness.jobs.getSchemaVersion(), 5);
+    assert.equal(harness.jobs.getSchemaVersion(), 6);
     const names = harness.db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
       .all()
@@ -141,12 +141,12 @@ test("a v3 database upgrades to the current schema version without touching exis
 
     // Pretend the file predates this phase, then let the current build migrate it forward.
     const raw = new Database(file);
-    assert.equal(Number(raw.pragma("user_version", { simple: true })), 5);
+    assert.equal(Number(raw.pragma("user_version", { simple: true })), 6);
     raw.pragma("user_version = 3");
     raw.close();
 
     const reopened = new SqliteJobRepository(file);
-    assert.equal(reopened.getSchemaVersion(), 5);
+    assert.equal(reopened.getSchemaVersion(), 6);
     const project = reopened.getProject("legacy");
     assert.equal(project.description, "kept");
     assert.equal(reopened.listProjectScenes("legacy").length, 1);

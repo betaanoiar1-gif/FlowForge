@@ -232,6 +232,13 @@ export interface ProductionPlanVersion {
   /** The version's content hash as the planner left it: "unchanged since planning" is derivable. */
   plannerContentHash?: string;
   plannerTrace?: PlannerTraceStep[];
+  /**
+   * AI proposal provenance (Phase 4C), present only when an adapter produced the input this version was
+   * planned from. Identity, fingerprints, and whether a fallback was used — never a prompt, a response
+   * body, or a credential. The plan it describes is still the deterministic planner's output: an AI
+   * adapter proposes, this aggregate's rules decide.
+   */
+  ai?: import("./ai-planning.js").PlanAiProvenance;
   createdAt: string;
   updatedAt: string;
 }
@@ -245,7 +252,23 @@ export interface PlannerTraceStep {
   /** IDs or scene keys the rule touched, in the order it touched them. */
   subjects?: string[];
   detail?: string;
+  /**
+   * Which part of a run produced this step (Phase 4C). Omitted on a deterministic run's own steps, which
+   * are all `DETERMINISTIC_PLANNING` by definition; an AI-planning run prefixes and follows them with the
+   * adapter stages, so one trace answers "what happened, in what order" without a second trace system.
+   * Never hashed into plan content, so adding a stage cannot change a plan.
+   */
+  stage?: PlannerTraceStage;
 }
+
+/** Stages an AI-planned run records around the deterministic planner's own rule steps. */
+export type PlannerTraceStage =
+  | "AI_REQUEST"
+  | "AI_RESPONSE"
+  | "AI_SCHEMA_VALIDATION"
+  | "NORMALIZATION"
+  | "DETERMINISTIC_PLANNING"
+  | "DOMAIN_VALIDATION";
 
 /** Everything a planner run is identified by, persisted with the version it authored. */
 export interface PlanProvenance {
@@ -257,6 +280,13 @@ export interface PlanProvenance {
   /** Content hash immediately after the run, so later edits are detectable. */
   contentHash: string;
   trace: PlannerTraceStep[];
+  /**
+   * How the input for this run was produced, when an AI adapter proposed it (Phase 4C). It travels with
+   * the planner provenance because it describes the same authorship act, and it is recorded under the
+   * same rules: one write, complete set, never amended. Absent means "the deterministic planner's own
+   * input" — the ordinary case, and never an error.
+   */
+  ai?: import("./ai-planning.js").PlanAiProvenance;
 }
 
 export interface PlanStory {

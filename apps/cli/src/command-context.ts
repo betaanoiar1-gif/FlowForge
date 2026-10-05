@@ -22,6 +22,12 @@ export interface CommandDefinition {
   flags: readonly string[];
   /** Whether the command needs a durable worker (execution, provider-side cancellation). */
   execution?: boolean;
+  /**
+   * Whether the command needs the AI planner adapter wired into its application. Only the AI planning
+   * command sets it, and setting it is what makes the CLI read the configured environment variable — no
+   * other invocation touches a credential, and none ever receives a worker or a browser.
+   */
+  ai?: boolean;
   run: (context: CommandContext) => Promise<void> | void;
 }
 

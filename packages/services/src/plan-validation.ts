@@ -25,7 +25,7 @@ import type { ProviderDescriptor } from "./ports.js";
 export const PLAN_ASPECT_RATIO_PATTERN = /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/;
 export const MIN_SPEC_DURATION_MS = 250;
 export const MAX_SPEC_OUTPUT_COUNT = 32;
-const BRIEF_CONSTRAINT_KINDS: readonly CreativeBriefConstraint["kind"][] = [
+export const BRIEF_CONSTRAINT_KINDS: readonly CreativeBriefConstraint["kind"][] = [
   "MUST",
   "MUST_NOT",
   "PREFERENCE",

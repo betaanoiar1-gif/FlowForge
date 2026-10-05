@@ -65,6 +65,8 @@ export interface NormalizedBeat {
   worldId?: string;
   durationMs?: number;
   outputKinds: readonly GenerationSpecKind[];
+  /** Caller-stated continuity intent, carried verbatim (tidied) into the continuity rule. */
+  continuityNote?: string;
 }
 
 export interface NormalizedOptions {
@@ -471,6 +473,7 @@ export function normalizePlannerInput(input: PlannerInput): NormalizedPlannerInp
         worldId,
         durationMs: durationMs(beat.durationMs, `story.beats[${index}].durationMs`),
         outputKinds: specKinds(beat.outputKinds, `story.beats[${index}].outputKinds`, options.defaultOutputKinds),
+        continuityNote: tidyText(beat.continuityNote, `story.beats[${index}].continuityNote`, 600),
       });
     }
   }

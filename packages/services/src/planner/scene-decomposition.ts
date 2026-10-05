@@ -36,6 +36,7 @@ export function decomposeBeats(state: PlannerState): void {
       specs: [],
       beatKey: key,
       outputKinds: beat.outputKinds,
+      ...(beat.continuityNote === undefined ? {} : { continuityNote: beat.continuityNote }),
     };
     scenes.push(scene);
     state.scenes.push(scene);

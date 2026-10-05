@@ -17,6 +17,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { emit, EXIT_BLOCKED, type CommandDefinition } from "./command-context.js";
+import type { AiPlanProductionResult, AiPlanningGuidance } from "@flowforge/services";
 
 /**
  * Operator commands for the deterministic planner (Phase 4B).
@@ -87,6 +88,88 @@ export const PLANNER_COMMANDS: Record<string, CommandDefinition> = {
       if (result.outcome !== "SUCCESS") process.exitCode = EXIT_BLOCKED;
     },
   },
+  /**
+   * AI-assisted planning (Phase 4C). One verb, planning-only: it asks the configured adapter for a
+   * proposal, refuses anything that is not a valid proposal, and hands the accepted one to the same
+   * deterministic planner `planner run` uses. It creates no job, enqueues nothing, and there is
+   * deliberately no `planner execute` to add one to: execution remains outside this phase.
+   */
+  "planner ai-run": {
+    usage:
+      "planner ai-run --project-id ID [--brief-id ID] [--plan-title TEXT] [--ai-adapter openai-chat] [--ai-model NAME] [--ai-base-url URL] [--ai-key-env NAME] [--guidance-json JSON] [--story-json JSON] [--cast-json JSON] [--worlds-json JSON] [--visual-dna-id ID] [--options-json JSON] [--providers CSV] [--seed N] [--scenes N] [--duration-ms N] [--fallback deterministic] [--dry-run] [--trace] [--approve] [--reviewer NAME]",
+    summary:
+      "Ask the configured AI planner for a proposal, then plan it deterministically and validate it. Planning only: nothing is generated or executed.",
+    ai: true,
+    flags: [
+      "project-id",
+      "brief-id",
+      "plan-title",
+      "ai-adapter",
+      "ai-model",
+      "ai-base-url",
+      "ai-key-env",
+      "guidance-json",
+      "story-json",
+      "cast-json",
+      "worlds-json",
+      "visual-dna-id",
+      "options-json",
+      "providers",
+      "seed",
+      "scenes",
+      "duration-ms",
+      "fallback",
+      "dry-run",
+      "trace",
+      "approve",
+      "reviewer",
+    ],
+    execution: false,
+    async run({ options, globals, app }) {
+      const optionsJson = parseJsonOption<Record<string, unknown>>(options, "options-json");
+      if (optionsJson !== undefined && (typeof optionsJson !== "object" || Array.isArray(optionsJson))) {
+        throw new UsageError(
+          "--options-json must be a JSON object.",
+          'Example: {"replan":"new-version","aspectRatio":"9:16"}',
+        );
+      }
+      const guidance = parseJsonOption<Record<string, unknown>>(options, "guidance-json");
+      if (guidance !== undefined && (typeof guidance !== "object" || Array.isArray(guidance))) {
+        throw new UsageError("--guidance-json must be a JSON object.", 'Example: {"sceneCount":4,"notes":"no dialogue"}');
+      }
+      const fallback = optionalString(options, "fallback");
+      if (fallback !== undefined && fallback !== "none" && fallback !== "deterministic") {
+        throw new UsageError('--fallback must be "none" or "deterministic".', "AI output is never patched into a plan on its own.");
+      }
+      const seed = optionalNumber(options, "seed");
+      const scenes = optionalNumber(options, "scenes");
+      const durationMs = optionalNumber(options, "duration-ms");
+      const merged: PlannerOptionsInput = {
+        ...(optionsJson ?? {}),
+        ...(seed === undefined ? {} : { seed }),
+        ...(scenes === undefined ? {} : { developmentScenes: scenes }),
+        ...(durationMs === undefined ? {} : { totalDurationMs: durationMs }),
+      };
+      const result = await app.aiPlanning.plan({
+        projectId: requireString(options, "project-id"),
+        briefId: optionalString(options, "brief-id"),
+        planTitle: optionalString(options, "plan-title"),
+        ...(guidance === undefined ? {} : { guidance: guidance as AiPlanningGuidance }),
+        story: parseJsonOption<PlannerStoryInput>(options, "story-json"),
+        cast: parseJsonOption<PlannerCastInput[]>(options, "cast-json"),
+        worlds: parseJsonOption<PlannerWorldInput[]>(options, "worlds-json"),
+        visualDnaId: optionalString(options, "visual-dna-id"),
+        options: Object.keys(merged).length > 0 ? merged : undefined,
+        providers: csv(options, "providers"),
+        dryRun: isSet(options, "dry-run"),
+        approve: isSet(options, "approve"),
+        reviewer: optionalString(options, "reviewer"),
+        ...(fallback === undefined ? {} : { fallback: fallback as "none" | "deterministic" }),
+      });
+      emit(globals, result, (value) => renderAiRun(value, isSet(options, "trace")));
+      if (result.outcome !== "SUCCESS") process.exitCode = EXIT_BLOCKED;
+    },
+  },
   "planner rules": {
     usage: "planner rules",
     summary: "Print the planner version, its rules in execution order, and the defaults each knob uses.",
@@ -123,6 +206,67 @@ export const PLANNER_COMMANDS: Record<string, CommandDefinition> = {
     },
   },
 };
+
+function renderAiRun(result: AiPlanProductionResult, showTrace: boolean): string[] {
+  const lines: string[] = [
+    `ai planning  adapter ${result.ai.adapter}@${result.ai.adapterVersion}  ${result.ai.provider}/${result.ai.model}`,
+    `  schema ${result.ai.schemaVersion}  path ${result.ai.path}  fallback ${result.ai.fallback ? "yes" : "no"}`,
+    `  provenance: ${result.ai.provenanceRecorded ? "recorded with the version" : "not recorded"}${
+      result.ai.provenanceReason === undefined ? "" : ` — ${result.ai.provenanceReason}`
+    }`,
+    `  request ${short(result.ai.requestFingerprint)}  proposal ${short(result.ai.proposalFingerprint ?? "none")}  response ${short(
+      result.ai.responseFingerprint ?? "none",
+    )}`,
+    `  outcome: ${result.outcome}${result.created ? "  (version created)" : ""}${
+      result.reused ? "  (unchanged content reused — nothing written)" : ""
+    }`,
+  ];
+  if (result.plan) lines.push(`  plan: ${result.plan.id}  "${result.plan.title}"`);
+  if (result.version) {
+    lines.push(`  version: v${result.version.versionNumber} ${result.version.status}  id ${result.version.id}`);
+  }
+  if (result.planner) {
+    lines.push(
+      `  planner ${result.planner.plannerVersion}  rules ${result.planner.rulesVersion}  seed ${result.planner.seed}`,
+      `  input: ${short(result.planner.inputFingerprint)}  output: ${short(result.planner.outputFingerprint ?? "none")}`,
+      `  scene plans: ${result.scenePlans}  generation specs: ${result.specs}`,
+    );
+  }
+  if (result.validation) {
+    lines.push(
+      `  validation: ${result.validation.status}  ${result.validation.errorCount} error(s), ${result.validation.warningCount} warning(s)`,
+    );
+  }
+  for (const issue of result.ai.issues.slice(0, 8)) {
+    lines.push(`  schema ${issue.code} [${issue.path}]: ${issue.message}`);
+  }
+  if (result.ai.issues.length > 8) lines.push(`  schema: and ${String(result.ai.issues.length - 8)} more issue(s)`);
+  for (const notice of result.notices) {
+    const origin = "rule" in notice ? notice.rule : notice.stage;
+    lines.push(`  ${notice.severity} ${notice.code}${origin === undefined ? "" : ` (${origin})`}: ${notice.message}`);
+  }
+  for (const finding of result.findings.filter((entry) => entry.severity === "ERROR")) {
+    lines.push(`  ! ${finding.code} (${finding.subject.kind} ${short(finding.subject.id)}): ${finding.message}`);
+  }
+  for (const error of result.errors) {
+    lines.push(`  ! ${error.code}${error.field === undefined ? "" : ` [${error.field}]`}: ${error.message}`);
+  }
+  if (showTrace) {
+    lines.push(`  trace (${String(result.trace.length)} step(s)):`);
+    for (const entry of result.trace) {
+      lines.push(
+        `    ${(entry.stage ?? "RULE").padEnd(22)} ${entry.outcome.padEnd(7)} ${entry.rule}${
+          entry.subjects === undefined || entry.subjects.length === 0 ? "" : `  [${entry.subjects.map(short).join(", ")}]`
+        }  ${entry.detail}`,
+      );
+    }
+  } else if (result.trace.length > 0) {
+    lines.push(`  trace: ${String(result.trace.length)} step(s) recorded — add --trace to print them`);
+  }
+  lines.push("  boundary: planning only. No generation job was created, nothing was enqueued, and nothing was executed.");
+  lines.push(`  next: ${result.nextAction}`);
+  return lines;
+}
 
 function renderRun(result: PlanProductionResult): string[] {
   const lines: string[] = [

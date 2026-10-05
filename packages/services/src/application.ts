@@ -1,3 +1,4 @@
+import type { AIPlanner } from "@flowforge/core";
 import type {
   ProviderDescriptor,
   ProviderRegistry,
@@ -14,6 +15,7 @@ import { QueueService } from "./queue-service.js";
 import { ReviewService } from "./review-service.js";
 import { ProductionService } from "./production-service.js";
 import { PlannerService } from "./planner-service.js";
+import { AiPlannerService } from "./ai-planner-service.js";
 import {
   CreativeBriefService,
   PlanningDefinitionService,
@@ -39,6 +41,13 @@ export interface ApplicationOptions {
    * exactly as before, and planning access without it raises `PLANNING_NOT_CONFIGURED`.
    */
   planning?: PlanningRepository;
+  /**
+   * The AI planner adapter (Phase 4C). Optional, like `planning`: absent means AI planning is unavailable
+   * here and `aiPlanning.plan()` fails with `AI_PLANNER_NOT_CONFIGURED`, while every deterministic path
+   * keeps working untouched. The adapter is provider-neutral and read-only; it is never handed a
+   * repository, a queue, or a lifecycle service, and it can therefore write nothing.
+   */
+  aiPlanner?: AIPlanner;
 }
 
 export interface FlowForgeApplication {
@@ -57,6 +66,12 @@ export interface FlowForgeApplication {
   readonly planReads: PlanningReadService;
   /** The deterministic planner: authors plan versions from a brief through the planning services. */
   readonly planner: PlannerService;
+  /**
+   * AI-assisted planning (Phase 4C). Propose-only: it builds the request, validates the answer, and hands
+   * the result to `planner`, which stays the sole author of plan rows. Nothing here submits, enqueues,
+   * or executes anything.
+   */
+  readonly aiPlanning: AiPlannerService;
 }
 
 /**
@@ -83,6 +98,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
     now: options.now ?? (() => new Date()),
     defaultMaxAttempts,
     planning: options.planning,
+    aiPlanner: options.aiPlanner,
   };
 
   const projects = new ProjectService(deps);
@@ -97,6 +113,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
   const plans = new ProductionPlanService(deps, planReads);
   const planValidation = new PlanningValidationService(deps, planReads);
   const planner = new PlannerService(deps, planReads, plans, planValidation);
+  const aiPlanning = new AiPlannerService(deps, planner);
   return {
     repository,
     providers,
@@ -112,6 +129,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
     planValidation,
     planReads,
     planner,
+    aiPlanning,
   };
 }
 

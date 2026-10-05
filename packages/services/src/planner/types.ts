@@ -79,6 +79,13 @@ export interface StoryBeatInput {
   emphasis?: StoryBeatEmphasis;
   /** Spec kinds for this beat; defaults to `options.defaultOutputKinds`. */
   outputKinds?: readonly GenerationSpecKind[];
+  /**
+   * A continuity intent for this beat, in the caller's own words (Phase 4C: an AI proposal states what a
+   * scene inherits; an operator may too). It is *content*: it changes both fingerprints and therefore
+   * forks a version rather than reusing one. What a continuity record looks like — its fields, its
+   * position, its relation to the previous scene — stays the `continuity-linking` rule's decision.
+   */
+  continuityNote?: string;
 }
 
 export interface PlannerStoryInput {
@@ -207,6 +214,12 @@ export interface PlannedScenePlan {
   outputKinds: readonly GenerationSpecKind[];
   /** The kinds actually planned, after capability adaptation; differs from `outputKinds` only when refused. */
   plannedKinds?: readonly GenerationSpecKind[];
+  /**
+   * Caller-stated continuity intent from the beat (Phase 4C: an AI proposal's words, or an operator's).
+   * `continuity-linking` turns it into a `ScenePlanContinuity` entry; the note itself is not a row field,
+   * so it exists only inside the plan the rules are building.
+   */
+  continuityNote?: string;
 }
 
 /** Everything a planning run decided, before anything is persisted. */

@@ -28,6 +28,7 @@ import {
   type WorldVisualIdentity,
   type PlanVersionStatus,
   type PlanProvenance,
+  type PlanAiProvenance,
   type PlannerTraceStep,
 } from "@flowforge/core";
 import {
@@ -474,7 +475,12 @@ export class SqlitePlanningRepository {
           version.plannerRulesVersion !== provenance.rulesVersion ||
           version.plannerSeed !== provenance.seed ||
           version.plannerInputFingerprint !== provenance.inputFingerprint ||
-          version.plannerOutputFingerprint !== provenance.outputFingerprint
+          version.plannerOutputFingerprint !== provenance.outputFingerprint ||
+          // An identical planner tuple with a different AI tuple is not an identical authorship record:
+          // one run was proposed by an adapter and the other was not, and that difference is precisely
+          // what provenance exists to keep. Refuse rather than let the first record absorb the second.
+          (version.ai?.adapter ?? null) !== (provenance.ai?.adapter ?? null) ||
+          (version.ai?.proposalFingerprint ?? null) !== (provenance.ai?.proposalFingerprint ?? null)
         ) {
           throw new Error(
             `Plan version ${version.id} already carries provenance from ${version.plannerVersion}; ` +
@@ -488,7 +494,11 @@ export class SqlitePlanningRepository {
           `UPDATE production_plan_versions
            SET planner_version = ?, planner_rules_version = ?, planner_seed = ?,
                planner_input_fingerprint = ?, planner_output_fingerprint = ?, planner_content_hash = ?,
-               planner_trace_json = ?, updated_at = ?
+               planner_trace_json = ?,
+               ai_adapter = ?, ai_adapter_version = ?, ai_provider = ?, ai_model = ?, ai_schema_version = ?,
+               ai_path = ?, ai_request_fingerprint = ?, ai_proposal_fingerprint = ?, ai_response_fingerprint = ?,
+               ai_fallback = ?,
+               updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -499,6 +509,7 @@ export class SqlitePlanningRepository {
           provenance.outputFingerprint,
           provenance.contentHash,
           provenance.trace.length > 0 ? encodeJson(provenance.trace) : null,
+          ...aiProvenanceValues(provenance.ai),
           now,
           version.id,
         );
@@ -1493,6 +1504,30 @@ export interface SetPlanProvenanceInput {
   now?: string;
 }
 
+/**
+ * The ten AI columns as a positional list, including the NULLs the completeness trigger expects. A run
+ * with no adapter writes NULLs for all of them, which is the only way to satisfy "complete set or
+ * nothing" — and the reason the repository, not a caller, owns this list.
+ */
+function aiProvenanceValues(ai: PlanAiProvenance | undefined): (string | number | null)[] {
+  if (!ai) {
+    return [null, null, null, null, null, null, null, null, null, null];
+  }
+  return [
+    requiredText(ai.adapter, "ai.adapter"),
+    requiredText(ai.adapterVersion, "ai.adapterVersion"),
+    requiredText(ai.provider, "ai.provider"),
+    requiredText(ai.model, "ai.model"),
+    requiredText(ai.schemaVersion, "ai.schemaVersion"),
+    requiredText(ai.path, "ai.path"),
+    requiredText(ai.requestFingerprint, "ai.requestFingerprint"),
+    requiredText(ai.proposalFingerprint, "ai.proposalFingerprint"),
+    // A fallback attempt with nothing to answer has no response to digest, and that must stay sayable.
+    ai.responseFingerprint ?? null,
+    ai.fallback ? 1 : 0,
+  ];
+}
+
 export interface UpsertStoryInput {
   planVersionId: string;
   premise: string;
@@ -1699,6 +1734,16 @@ interface PlanVersionRow {
   planner_output_fingerprint: string | null;
   planner_content_hash: string | null;
   planner_trace_json: string | null;
+  ai_adapter: string | null;
+  ai_adapter_version: string | null;
+  ai_provider: string | null;
+  ai_model: string | null;
+  ai_schema_version: string | null;
+  ai_path: string | null;
+  ai_request_fingerprint: string | null;
+  ai_proposal_fingerprint: string | null;
+  ai_response_fingerprint: string | null;
+  ai_fallback: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1887,6 +1932,21 @@ function planVersionFromRow(row: PlanVersionRow): ProductionPlanVersion {
     plannerTrace: row.planner_trace_json
       ? decodeJson<PlannerTraceStep[]>(row.planner_trace_json, [])
       : undefined,
+    ai:
+      row.ai_adapter === null
+        ? undefined
+        : {
+            adapter: row.ai_adapter,
+            adapterVersion: row.ai_adapter_version ?? "",
+            provider: row.ai_provider ?? "",
+            model: row.ai_model ?? "",
+            schemaVersion: row.ai_schema_version ?? "",
+            path: row.ai_path === "deterministic-fallback" ? "deterministic-fallback" : "ai-adapter",
+            requestFingerprint: row.ai_request_fingerprint ?? "",
+            proposalFingerprint: row.ai_proposal_fingerprint ?? "",
+            responseFingerprint: row.ai_response_fingerprint,
+            fallback: row.ai_fallback === 1,
+          },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

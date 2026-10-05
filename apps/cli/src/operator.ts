@@ -11,7 +11,15 @@ import type {
 } from "@flowforge/services";
 import { parseArgs, rejectUnknown, UsageError, isSet, optionalNumber, optionalString, parseJsonOption, requireString } from "./args.js";
 import type { ParsedArgs } from "./args.js";
-import { GLOBAL_FLAGS, openApplication, resolveGlobals, type OpenedApplication, type ResolvedGlobals } from "./runtime.js";
+import {
+  createAiPlanner,
+  GLOBAL_FLAGS,
+  openApplication,
+  resolveAiPlannerSelection,
+  resolveGlobals,
+  type OpenedApplication,
+  type ResolvedGlobals,
+} from "./runtime.js";
 
 export { EXIT_BLOCKED, EXIT_ERROR, EXIT_OK, EXIT_USAGE } from "./command-context.js";
 
@@ -72,7 +80,16 @@ async function dispatchOperatorCommand(argv: readonly string[]): Promise<number>
   rejectUnknown(args.options, [...definition.flags, ...GLOBAL_FLAGS, "help"], path);
 
   const globals = resolveGlobals(args);
-  const opened = await openApplication(globals, { execution: definition.execution === true });
+  // Only an AI planning command selects an adapter, so the credential variable is read on exactly the
+  // invocations that need it. No command wires a worker and an adapter together: AI planning is read-side.
+  const ai =
+    definition.ai === true
+      ? await createAiPlanner(resolveAiPlannerSelection(args.options))
+      : undefined;
+  const opened = await openApplication(globals, {
+    execution: definition.execution === true,
+    ...(ai === undefined ? {} : { aiPlanner: ai.aiPlanner, describedAiPlanner: ai.described }),
+  });
   try {
     await definition.run({ options: args.options, globals, app: opened.app, opened });
     return process.exitCode === EXIT_BLOCKED ? EXIT_BLOCKED : EXIT_OK;

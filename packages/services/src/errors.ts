@@ -56,6 +56,8 @@ export const APPLICATION_ERROR_CODES = Object.freeze({
   PLAN_CAPABILITY_UNMET: "PLAN_CAPABILITY_UNMET",
   /** The repository rejected the write for a reason the operator must see verbatim. */
   PERSISTENCE_REJECTED: "PERSISTENCE_REJECTED",
+  /** AI planning was requested, but this application has no AI planner adapter wired. */
+  AI_PLANNER_NOT_CONFIGURED: "AI_PLANNER_NOT_CONFIGURED",
 } as const);
 
 export type ApplicationErrorCode = (typeof APPLICATION_ERROR_CODES)[keyof typeof APPLICATION_ERROR_CODES];

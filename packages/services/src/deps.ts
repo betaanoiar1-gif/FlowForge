@@ -1,3 +1,4 @@
+import type { AIPlanner } from "@flowforge/core";
 import type { ProviderRegistry, QueuePort, WorkerPort, JobRepository, PlanningRepository } from "./ports.js";
 
 /** Shared, read-mostly context handed to every service constructed by `createApplication`. */
@@ -8,6 +9,12 @@ export interface ServiceDeps {
    * fail with `PLANNING_NOT_CONFIGURED` when it is absent, never with a `TypeError`.
    */
   readonly planning?: PlanningRepository;
+  /**
+   * The AI planner adapter (Phase 4C). Optional, like `planning`: absent means AI planning is unavailable
+   * in this process and `AiPlannerService` fails with `AI_PLANNER_NOT_CONFIGURED` instead of inventing a
+   * provider. Every deterministic path keeps working untouched either way.
+   */
+  readonly aiPlanner?: AIPlanner;
   readonly queue?: QueuePort;
   readonly worker?: WorkerPort;
   /** Provider ID the wired worker serves; the coverage guard is computed against this. */

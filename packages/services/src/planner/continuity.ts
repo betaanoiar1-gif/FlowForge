@@ -40,6 +40,12 @@ export function linkContinuity(state: PlannerState): void {
         note: `inherited from ${previous.sceneKey}`,
       });
     }
+    if (scene.continuityNote !== undefined && scene.continuityNote.trim().length > 0) {
+      // The caller's own words, kept as given: what the scene inherits is their statement, and only the
+      // *shape* of a continuity record is the rule's. Placed after the predecessor seam and before the
+      // forward seam, so the sequence an operator reads is still past → stated intent → future.
+      scene.continuity.push({ statement: scene.continuityNote.trim(), source: state.currentRule });
+    }
     if (index < scenes.length - 1) {
       const next = scenes[index + 1];
       scene.continuity.push({

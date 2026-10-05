@@ -24,6 +24,42 @@ export { ProjectService } from "./project-service.js";
 export { PlannerService, type PlanProductionResult } from "./planner-service.js";
 export { mapPlanToJobs, type PlanExecutionMapping, type PlanExecutionOptions, type PlannedJobIntent } from "./plan-execution.js";
 export * as planner from "./planner/index.js";
+// AI-assisted planning (Phase 4C): the orchestration service, and the pieces it composes. The adapter
+// implementations live in `providers/*`; nothing here names a vendor.
+export { AiPlannerService } from "./ai-planner-service.js";
+export {
+  AI_PLANNING_ERROR_CODES,
+  AI_PLANNING_NOTICE_CODES,
+  type AiPlanningErrorCode,
+} from "./ai-planner/codes.js";
+export {
+  AI_PROPOSAL_LIMITS,
+  validateProposal,
+  type AiPlanningIssue,
+  type AiPlanningIssueCode,
+  type ProposalValidation,
+} from "./ai-planner/schema.js";
+export {
+  aiProposalFingerprint,
+  aiRequestFingerprint,
+  aiResponseFingerprint,
+} from "./ai-planner/fingerprint.js";
+export {
+  translateProposal,
+  type AiPlanningError,
+  type TranslationContext,
+  type TranslationResult,
+  type TranslatedProposal,
+} from "./ai-planner/translate.js";
+export type {
+  AiPlanNotice,
+  AiPlanOutcome,
+  AiPlanProductionCommand,
+  AiPlanProductionResult,
+  AiPlanningGuidance,
+  AiPlanningNotice,
+  AiPlanningSummary,
+} from "./ai-planner/types.js";
 export { SceneService } from "./scene-service.js";
 export { GenerationService } from "./generation-service.js";
 export { QueueService } from "./queue-service.js";

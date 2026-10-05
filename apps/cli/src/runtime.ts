@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { FileSystemAssetStore } from "@flowforge/assets";
-import type { GenerationProvider } from "@flowforge/core";
+import type { AIPlanner, GenerationProvider } from "@flowforge/core";
 import type { MockArtifactMode, MockProviderMode } from "@flowforge/provider-mock";
 import { LocalQueueWorker, SqliteJobQueue } from "@flowforge/queue";
 import { SqliteJobRepository, SqlitePlanningRepository } from "@flowforge/storage";
@@ -87,6 +87,62 @@ export function resolveGlobals(args: ParsedArgs): ResolvedGlobals {
   };
 }
 
+/**
+ * The AI planner adapters this build can wire. The table is deliberately short: adding a vendor means
+ * adding a package that implements the domain's `AIPlanner` port, not touching planning logic, and an
+ * operator selects it here rather than by editing code.
+ */
+export const AI_ADAPTERS = Object.freeze(["openai-chat"] as const);
+export type AiAdapterId = (typeof AI_ADAPTERS)[number];
+
+/**
+ * Selection of an AI planner adapter from the command line. Every field is *configuration*, and the
+ * credential is only ever named: the flag carries the environment variable to read, never a key.
+ */
+export interface AiPlannerSelection {
+  adapter: AiAdapterId;
+  model?: string;
+  baseUrl?: string;
+  apiKeyEnv?: string;
+}
+
+export function resolveAiPlannerSelection(options: ParsedArgs["options"]): AiPlannerSelection {
+  const adapter = optionalString(options, "ai-adapter") ?? "openai-chat";
+  if (!(AI_ADAPTERS as readonly string[]).includes(adapter)) {
+    throw new UsageError(
+      `--ai-adapter must be one of ${AI_ADAPTERS.join(", ")}.`,
+      `An adapter is a package that implements FlowForge's AIPlanner port; ${adapter} is not installed.`,
+    );
+  }
+  return {
+    adapter: adapter as AiAdapterId,
+    model: optionalString(options, "ai-model"),
+    baseUrl: optionalString(options, "ai-base-url") ?? process.env.FLOWFORGE_AI_BASE_URL,
+    apiKeyEnv: optionalString(options, "ai-key-env") ?? process.env.FLOWFORGE_AI_KEY_ENV,
+  };
+}
+
+/**
+ * Constructs the selected adapter. The package is imported only for a command that asked for AI planning,
+ * so an unrelated invocation never loads a provider module, never reads an environment variable, and
+ * cannot reach an endpoint. The constructed object is the domain port and nothing else: it has no
+ * repository, queue, or browser to misuse.
+ */
+export async function createAiPlanner(
+  selection: AiPlannerSelection,
+): Promise<{ readonly aiPlanner: AIPlanner; readonly described: Record<string, unknown> }> {
+  if (selection.adapter !== "openai-chat") {
+    throw new UsageError(`Adapter ${selection.adapter} is not implemented in this build.`);
+  }
+  const flow = await import("@flowforge/provider-openai-chat");
+  const planner = new flow.OpenAiChatPlanner({
+    ...(selection.model === undefined ? {} : { model: selection.model }),
+    ...(selection.baseUrl === undefined ? {} : { baseUrl: selection.baseUrl }),
+    ...(selection.apiKeyEnv === undefined ? {} : { apiKeyEnv: selection.apiKeyEnv }),
+  });
+  return { aiPlanner: planner, described: planner.describe() };
+}
+
 export interface OpenedApplication {
   app: FlowForgeApplication;
   globals: ResolvedGlobals;
@@ -94,6 +150,8 @@ export interface OpenedApplication {
   assetRoot: string;
   providerId: string;
   executionEnabled: boolean;
+  /** What the AI planning adapter was configured as, when one was wired. Identity only, never a key. */
+  aiPlanner?: Record<string, unknown>;
   close: () => Promise<void>;
 }
 
@@ -104,7 +162,9 @@ export interface OpenedApplication {
  */
 export async function openApplication(
   globals: ResolvedGlobals,
-  options: { execution: boolean; workerId?: string } = { execution: true },
+  options: { execution: boolean; workerId?: string; aiPlanner?: AIPlanner; describedAiPlanner?: Record<string, unknown> } = {
+    execution: true,
+  },
 ): Promise<OpenedApplication> {
   const dataDir = path.resolve(globals.dataDir);
   await mkdir(dataDir, { recursive: true });
@@ -174,6 +234,7 @@ export async function openApplication(
     workerProviderId: worker ? descriptor.id : undefined,
     defaultMaxAttempts: globals.maxAttempts,
     planning,
+    aiPlanner: options.aiPlanner,
   });
 
   return {
@@ -183,6 +244,7 @@ export async function openApplication(
     assetRoot,
     providerId: descriptor.id,
     executionEnabled: worker !== undefined,
+    ...(options.describedAiPlanner === undefined ? {} : { aiPlanner: options.describedAiPlanner }),
     close: async () => {
       await teardown();
       repository.close();

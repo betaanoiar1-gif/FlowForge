@@ -38,6 +38,9 @@ importers:
       '@flowforge/provider-mock':
         specifier: workspace:*
         version: link:../../providers/mock
+      '@flowforge/provider-openai-chat':
+        specifier: workspace:*
+        version: link:../../providers/openai-chat
       '@flowforge/queue':
         specifier: workspace:*
         version: link:../../packages/queue
@@ -184,6 +187,19 @@ importers:
         version: 5.9.3
 
   providers/mock:
+    dependencies:
+      '@flowforge/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.6.4
+        version: 26.6.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  providers/openai-chat:
     dependencies:
       '@flowforge/core':
         specifier: workspace:*

@@ -38,7 +38,7 @@ Two consequences an operator can rely on:
 | --- | --- |
 | `projectId` | Identity only; the engine loads nothing by it. |
 | `brief` | The `CreativeBrief` snapshot the plan serves (title, concept, objective, audience, tone, style, constraints). It must be `ACTIVE`; the planner never creates or edits a brief. |
-| `story` | `PlannerStoryInput`: `premise`, `structure`, `themes`, `beginning`, `development`, `ending`, optional ordered `beats`. |
+| `story` | `PlannerStoryInput`: `premise`, `structure`, `themes`, `beginning`, `development`, `ending`, optional ordered `beats`. A beat may also carry `continuityNote` (added by Phase 4C for proposals that state what must carry forward): when present it is trimmed and becomes a `ScenePlanContinuity` statement between the predecessor seam and the forward seam. Inputs that omit it are unaffected, byte for byte. |
 | `cast` | `PlannerCastInput[]`: `{ characterId, role?, scenes? }`, `scenes` naming beat keys. |
 | `worlds` | `PlannerWorldInput[]`: `{ worldId, scenes? }`, `scenes` naming beat keys. |
 | `visualDnaId` | Which DNA snapshot the version pins; omitted means "let the binding rule decide". |
@@ -228,7 +228,7 @@ approves (reviewer defaults to `deterministic-planner`) and, when `providers` ar
 A `dryRun` runs the engine and reports the draft, findings, notices, trace, and both fingerprints — and writes
 nothing at all, including provenance.
 
-## 8. Provenance (additive v5 migration)
+## 8. Provenance (additive v5 migration, extended by v6)
 
 `production_plan_versions` gained seven nullable columns (schema v5): `planner_version`,
 `planner_rules_version`, `planner_seed`, `planner_input_fingerprint`, `planner_output_fingerprint`,
@@ -329,6 +329,7 @@ the existing `ApplicationError` codes (`VALIDATION_FAILED`, `IDEMPOTENCY_CONFLIC
 | Columns nullable, outside the content hash, write-once, complete-set, no provenance on copies | `packages/storage/test/planner-provenance.test.mjs` |
 | Canonical JSON ordering/stability, fingerprint namespaces | `packages/core/test/canonical-json.test.mjs` |
 | Operator surface (rules, dry run, authored version, failure exit codes, no execution command) | `apps/cli/test/planner-cli.test.mjs` |
+| An AI-proposed plan is the same plan a hand-authored equivalent produces (same input and output fingerprints, same rows), with AI metadata outside both | `packages/services/test/ai-planner.test.mjs`; see [ai-planning.md](./ai-planning.md) §12 for the rest of that map |
 
 ## 13. Changing the planner
 
@@ -344,3 +345,20 @@ the existing `ApplicationError` codes (`VALIDATION_FAILED`, `IDEMPOTENCY_CONFLIC
    a run writes must stay outside it (see `fingerprintableView`).
 5. Keep provenance write-once. If a future phase needs to re-plan into a version that already carries it, that
    is a new version, not an update — the trigger is the guarantee, not an obstacle.
+6. A new *input channel* needs the same treatment as any other `PlannerInput` field: type it, normalize and
+   bound it, fold it into the fingerprint, keep it out of `fingerprintableView`'s exclusions only if it changes
+   content, and add a golden that shows an omitted-channel input is unchanged. Phase 4C did exactly this for
+   `StoryBeatInput.continuityNote` and judged `PLANNING_RULES_VERSION` not to move, because no rule's decision
+   changed and every input that omits the field produces byte-identical output — the golden suite is the
+   evidence for that judgement, not the intent behind it. A change to what a rule *decides* is a different
+   matter and always bumps the version.
+
+## 14. Who else feeds this engine
+
+`PlannerInput` is the only door into the rules. Phase 4C's AI planner is a *producer* of that door's contents —
+it reads the brief and definitions, asks a model for a structured proposal, refuses anything malformed or
+unresolvable, and calls `PlannerService.plan()` with planner input like any other caller. The engine gains no
+knowledge of models, adapters, providers, or prompts, and its purity scan still passes: nothing in
+`src/planner` imports I/O, and the AI code lives in `packages/services/src/ai-planner/` and
+`providers/openai-chat`. The contract, the proposal schema, provenance, and the fail-closed rules are in
+[ai-planning.md](./ai-planning.md).

@@ -37,12 +37,16 @@ models**.
 | `QueueService` | queue depth/inspection read models and **worker execution driving** (`runOnce`, `runUntilIdle`) behind a provider-coverage guard | lease SQL, retry transitions, recovery SQL (delegates to `SqliteJobRepository`/`LocalQueueWorker`) |
 | `ReviewService` | review queue read model, explicit APPROVE/REJECT decision, explicit approved+QC-passing selection | selection heuristics, auto-approval, QC recomputation |
 | `ProductionService` | derived production-readiness projection per scene/project and the guarded `READY` transition | new state source of truth |
+| `AiPlannerService` (Phase 4C) | the AI planning route: read the reviewed context, build the provider-neutral `AIPlanningRequest`, call the wired `AIPlanner` port, validate the answer against `ai-planning-proposal-v1`, translate names into planner input, and delegate to `PlannerService.plan()` — then report the planner's own outcome with AI provenance attached | authoring a plan, SQL, transactions, lifecycle transitions, queue submission, provider construction, browser access, retries against the endpoint, treating any model output as authoritative, and anything that executes |
 | `PlannerService` (Phase 4B) | assembling an explicit `PlannerInput` from reviewed reads, running the pure deterministic engine, and authoring a `SUCCESS` draft through the Phase 4A plan services; replan policy, content-based reuse, provenance recording, and post-write revalidation | SQL, provider construction or calls, queue submission, job creation, publishing, any content decision of its own (the rules own those) |
 
 Shared construction lives in `createApplication()` (`packages/services`), which wires an
 already-open repository, queue, optional worker, and optional provider registry, and (from Phase 4A/4B
-on) an optional `planning` port that unlocks `plans`, `planValidation`, `planReads`, and `planner`.
-`mapPlanToJobs` (`packages/services/src/plan-execution.ts`) is exported beside this service as a pure
+on) an optional `planning` port that unlocks `plans`, `planValidation`, `planReads`, and `planner`. Phase
+4C adds one more optional port, `aiPlanner` (the `AIPlanner` implementation to propose with), which unlocks
+`app.aiPlanning`; without it `aiPlanning.plan()` fails with `AI_PLANNER_NOT_CONFIGURED` and every
+deterministic path keeps working, so a process can be built, run, and tested with no adapter and no
+credential at all. `mapPlanToJobs` (`packages/services/src/plan-execution.ts`) is exported beside this service as a pure
 function that turns an approved plan snapshot into Phase 3 command intents; nothing in `packages/services`
 calls it, so planning cannot execute a plan by accident.
 
@@ -108,7 +112,9 @@ reconstructed in the CLI. Long prompt text is omitted from list/board projection
 only in detail projections. The planning read models (`packages/services/src/planning-read-models.ts`)
 follow the same rule, and Phase 4B added the planner view to them (`planned`, `plannerVersion`,
 `rulesVersion`, `seed`, `traceSteps`, `contentMatchesProvenance`, `detail`) — an absent provenance reads as
-"authored by hand", never as an error.
+"authored by hand", never as an error — and Phase 4C adds `version.ai` (adapter, adapter version, provider,
+model, schema version, path, fallback, and the three digests), read from the same v6 columns. No projection
+carries a prompt body, a response body, a header, or an endpoint path.
 
 ## 7. Operator surface
 
@@ -118,7 +124,7 @@ follow the same rule, and Phase 4B added the planner view to them (`planned`, `p
 `scene create|list|show|version add|version set-current|status set`,
 `generate`, `status`, `queue status|run|recover`, `cancel`, `retry`,
 `review list|show|approve|reject|select`, `production scene|project`, `brief`/`definition`/`plan` for the
-planning domain, and `planner rules|run` for Phase 4B. Output is
+planning domain, and `planner rules|run` for Phase 4B and `planner ai-run` for Phase 4C. Output is
 `--json` (machine-readable) or a human summary; both are generated from the same read
 model. Exit codes: `0` success, `1` application/domain error, `2` usage error, `3`
 operator-blocking state (readiness not satisfied, provider coverage incomplete).
@@ -181,9 +187,10 @@ node apps/cli/dist/index.js production ready --scene-id scene-1
 
 ## 10. Deliberately out of scope
 
-No web UI, no HTTP API, no daemon, no service worker, no AI planner, no multi-agent
-orchestration, no publishing, no billing/analytics, no full video pipeline, no live
-Google Flow validation. `BrowserSessionLauncher` and the Google Flow manual-auth gate are
+No web UI, no HTTP API, no daemon, no service worker, no multi-agent orchestration, no
+autonomous planning loop, no publishing, no billing/analytics, no full video pipeline, and no live
+Google Flow validation. Phase 4C's AI planner is an adapter that returns a proposal — the services still own
+every decision, and no service may submit work from a plan. `BrowserSessionLauncher` and the Google Flow manual-auth gate are
 unchanged. Redis/Kafka/RabbitMQ/Kubernetes remain excluded (D-014/D-015/D-016).
 
 ## 11. Phase 4A continuation
@@ -201,7 +208,7 @@ review behaviour, and the planning services own no execution path. The model, li
 rules, persistence shape, idempotency keys, CLI, and verified walkthrough live in
 [docs/planning-domain.md](./planning-domain.md).
 
-## 12. Phase 4B continuation
+## 12. Phase 4B/4C continuation
 
 Phase 4B adds one service, `PlannerService`, and one pure subsystem, `packages/services/src/planner/`. It
 does not change the ownership rules above: the engine decides content and reads nothing; the service reads
@@ -215,7 +222,17 @@ so tests and tooling can call `planner.runPlanner`, read `planner.PLANNER_RULES`
 Contracts, the 12-rule registry, canonical normalization and fingerprints, replan policies, provenance, and
 the "stops at the plan" boundary are specified in [docs/planner-engine.md](./planner-engine.md).
 
-Verification for the whole planning line (4A + 4B) on this checkout: `corepack pnpm build` and
-`corepack pnpm typecheck` clean across the workspace, `corepack pnpm test` 165/165 (Phase 3's 75, Phase 4A's
-40, plus Phase 4B's 50), and `corepack pnpm vertical-slice` passing unchanged. Live Google Flow execution
-remains **NOT RUN**; no planning or provider test requires an account or a browser.
+Phase 4C adds one service, `AiPlannerService` (`app.aiPlanning`), and one subsystem,
+`packages/services/src/ai-planner/` (schema validator, name resolution, digests, error and notice codes), plus
+the `providers/openai-chat` package that implements the domain's port. It adds no write path of its own: it
+calls the same `PlannerService.plan()`, so reuse, content hashing, provenance, lifecycle guards, and validation
+are the ones already documented above — and it is the only consumer of `AIPlanner` anywhere in the workspace.
+The proposal schema, provenance, security boundary, and failure model are specified in
+[docs/ai-planning.md](./ai-planning.md).
+
+Verification for the whole planning line (4A + 4B + 4C) on this checkout: `corepack pnpm build` and
+`corepack pnpm typecheck` clean across the workspace, `corepack pnpm test` passing (Phase 3's 75, Phase 4A's
+40, Phase 4B's 50, plus Phase 4C's 28 across storage, services, and the CLI and the adapter package's 14 — 207 tests in
+total), and
+`corepack pnpm vertical-slice` passing unchanged. Live Google Flow execution remains **NOT RUN**, and no
+planning, adapter, or CLI test requires a model credential, an account, or a browser.

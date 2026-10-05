@@ -1,4 +1,4 @@
-import type { SceneStatus } from "@flowforge/core";
+import type { PlanAiProvenance, PlannerTraceStep, SceneStatus } from "@flowforge/core";
 import type {
   PlannerCastInput,
   PlannerOptionsInput,
@@ -279,4 +279,17 @@ export interface PlanProductionCommand {
   approve?: boolean;
   reviewer?: string;
   now?: string;
+  /**
+   * AI proposal provenance for this run (Phase 4C), recorded with the version under the same write-once
+   * rules as planner provenance. Only `AiPlannerService` sets it: it describes *how the input was
+   * produced*, and the deterministic planner still decides every field of the plan itself. A reuse that
+   * writes nothing records nothing new, which is the point — the version keeps the authorship it has.
+   */
+  ai?: PlanAiProvenance;
+  /**
+   * Stage steps the caller recorded around the engine's own rule steps (AI request/response/schema/
+   * normalization). They are prepended to the persisted trace, never hashed into plan content, so an
+   * adapter's bookkeeping cannot change a plan.
+   */
+  aiTrace?: readonly PlannerTraceStep[];
 }

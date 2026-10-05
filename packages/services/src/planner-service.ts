@@ -168,7 +168,10 @@ export class PlannerService {
             inputFingerprint: run.inputFingerprint,
             outputFingerprint: run.outputFingerprint ?? "",
             contentHash,
-            trace: [...run.trace],
+            // One trace per version, in execution order: the caller's stages first (an AI-planned run's
+            // request/response/schema/normalization steps), then the rules the engine actually applied.
+            trace: [...(input.aiTrace ?? []), ...run.trace],
+            ...(input.ai === undefined ? {} : { ai: input.ai }),
           },
           now,
         }),

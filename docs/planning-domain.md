@@ -20,12 +20,20 @@ Planning Validation ──→ Approval ──→ Executability ─┤   (explici
                                      → durable queue → provider → assets / QC / review
 ```
 
-**Phase 4A is a domain foundation, not an AI planner.** There is no language model, no agent, no
-autonomous planning, and no provider call anywhere in the planning path. Planning data becomes
+**Phase 4A is a domain foundation, not an AI planner.** No phase of the planning path contains an agent, an
+autonomous planning loop, or a provider call that decides anything: where a model is involved (Phase 4C), it
+returns a proposal that the domain's own validator and lifecycle may refuse, and the refusal is the end of the
+run. Planning data becomes
 durable, versioned, validatable, and executable. Phase 4B then added the *authoring* half — a
 deterministic rule engine, still with no model and no provider call — and this document stays the
 authority for the aggregate it writes into; the engine itself is specified in
-[planner-engine.md](./planner-engine.md). Phase 4C (an optional AI adapter) remains unbuilt.
+[planner-engine.md](./planner-engine.md). Phase 4C adds an optional **AI proposal adapter** in front of that
+engine: a provider-neutral port returns a schema-validated proposal, which is translated into the same
+`PlannerInput` and planned by the same rules. It author nothing directly — it writes no SQL, calls no queue,
+opens no browser, and cannot make a domain decision the aggregate would not make on its own; a proposal naming
+an unknown character, an invented constraint, or an unsatisfiable capability ends the run with nothing
+written. The boundary, the proposal schema, and the provenance rules are in
+[ai-planning.md](./ai-planning.md); this document stays the authority for the aggregate both phases write into.
 
 ## 1. Domain model
 
@@ -216,6 +224,14 @@ validation evidence. Triggers make the set complete-or-empty and **write-once**:
 changes recorded provenance is refused at the SQL level, and `revise()` copies content but not
 provenance, so a hand-edited version cannot claim planner authorship.
 
+Phase 4C extends it again with **v6**, also additive: ten nullable AI-proposal provenance columns on
+`production_plan_versions` (`ai_adapter`, `ai_adapter_version`, `ai_provider`, `ai_model`, `ai_schema_version`,
+`ai_path`, `ai_request_fingerprint`, `ai_proposal_fingerprint`, `ai_response_fingerprint`, `ai_fallback`) with
+the same complete-set and write-once triggers, and `ai_response_fingerprint` deliberately exempt from both
+rules: a refused answer legitimately has no response to digest, and a digest of an archived response may be
+back-filled later, which is an addition rather than a rewrite of who was asked. The columns sit outside
+`content_hash` like v5's, so an adapter's identity can never make a plan look edited or invalidate evidence.
+
 | Table | Purpose | Key constraints |
 | --- | --- | --- |
 | `creative_briefs` | immutable intent snapshots | `UNIQUE(project_id, version_number)`, `supersedes_brief_id` self-FK, no-update/no-delete triggers |
@@ -323,6 +339,11 @@ The CLI renders the same data humans and scripts consume:
   `contentMatchesProvenance`, and a `detail` sentence). Absent provenance is reported as
   `authored by hand`, never as an error; a mismatch between the recorded content hash and the live one
   is reported as "edited after planning", which is information an operator needs, not a failure.
+- **AI proposal provenance** (Phase 4C: `version.ai` — `adapter`, `adapterVersion`, `provider`, `model`,
+  `schemaVersion`, `path` (`ai-adapter` | `deterministic-fallback`), `fallback`, and the three digests). A
+  version nobody proposed with a model has no `ai` object at all; a fallback version says so explicitly, so an
+  audited plan never hides that a model was tried first. The AI stages ride in `plannerTrace` with the rule
+  steps, in execution order — one trace per version, never two.
 - remaining **validation errors**, full finding list with subjects
 - number of **scene plans**, **generation specs**, cast, worlds, and DNA snapshots
 - **next action** (`AUTHOR_PLAN`, `VALIDATE_PLAN`, `REVALIDATE_PLAN`, `APPROVE_PLAN`,
@@ -346,8 +367,11 @@ delegating to a service method — the CLI contains no SQL and no direct writes,
 read models for humans and `--json`. Phase 4B adds two more in a `planner` group
 (`apps/cli/src/planner-commands.ts`): `planner rules` prints the engine's frozen rule registry, and
 `planner run` plans a project's current brief into an ordinary plan version (`--dry-run`, `--approve`,
-`--providers`, `--seed`, `--scenes`, `--duration-ms`). There is deliberately **no** `planner execute`
-command: the phase stops at the plan. Global flags, exit codes (0 ok, 1 error, 2 usage error,
+`--providers`, `--seed`, `--scenes`, `--duration-ms`). Phase 4C adds one verb to that group —
+`planner ai-run`, which asks the configured adapter for a proposal and plans whatever survives validation
+(plus `--ai-adapter`, `--ai-model`, `--ai-base-url`, `--ai-key-env`, `--guidance-json`, `--trace`, and
+`--fallback deterministic`). There is deliberately **no** `planner execute` and no AI execution variant: both
+phases stop at the plan, and the CLI tests assert the absence so it stays that way. Global flags, exit codes (0 ok, 1 error, 2 usage error,
 3 operator-blocked), and reviewer defaulting are unchanged from Phase 3.
 
 ```bash
@@ -409,11 +433,13 @@ Rejections are typed: `PLAN_NOT_EDITABLE` and `PLAN_VALIDATION_REQUIRED` surface
   provenance, reuses an identical version instead of writing, and exposes no execution command —
   `mapPlanToJobs` emits Phase 3 command intents for tests, and submitting them stays an explicit later
   decision. Specification: [planner-engine.md](./planner-engine.md).
-- **4C — AI Planner Adapter**: an optional adapter behind the planner interface returning
-  schema-validated planning data. **Not part of Phase 4A.** Phase 4A contains no LLM call, no agent,
-  no autonomous planning, no provider implementation change, no browser-automation change, no video
-  generation, no publishing, no analytics, no external API, no queue/daemon/event-bus change, no web
-  UI. Nothing in this phase may mutate provider data or perform destructive database operations.
+- **4C — AI Planner Adapter** (*delivered*): an optional adapter behind the domain's `AIPlanner` port
+  returning schema-validated planning data, which flows through normalization, the 4B engine, and the 4A
+  validator like any other input. It adds no agent, no autonomous planning, no provider-implementation change
+  to Google Flow, no browser-automation change, no video generation, no publishing, no analytics, no queue,
+  daemon, or event-bus change, and no web UI; the adapter owns no transaction, no lifecycle write, and no
+  execution path, and only the AI verb reads a credential variable. Specification:
+  [ai-planning.md](./ai-planning.md).
 
 ## 13. Verified operator walkthrough
 

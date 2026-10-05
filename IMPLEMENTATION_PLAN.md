@@ -72,7 +72,7 @@ The Phase 2 code path is implemented behind the existing `GenerationProvider` an
 5. **Derived production readiness:** readiness is computed from persisted evidence on every call (current version, succeeded output, no open generation, explicit selection, passing QC, explicit approval) and reported as blocking codes, so there is no stored flag that can drift from its justification.
 6. **Persistence/recovery respected:** leases, same-attempt recovery, `UNCERTAIN_PROVIDER_STATE` no-auto-retry, and the recovery manifest remain Phase 1/2 behaviour; the service layer only drives and reports them. Retry is offered only when the durable evidence permits it.
 7. **Operator surface and read models:** `apps/cli` exposes project/scene/version/generate/status/queue/cancel/retry/review/select/production/provider commands. Human and `--json` output are projections of the same read models, and errors carry stable codes with exit codes `0/1/2/3`.
-8. **Safety and scope:** authentication stays manual; the CLI attaches to the operator's browser session only when execution with `--provider google-flow` is requested, redacts the endpoint in messages, and never logs page content or secrets. No web UI, HTTP API, daemon, planner, agent, publishing, analytics, or video pipeline was introduced.
+8. **Safety and scope:** authentication stays manual; the CLI attaches to the operator's browser session only when execution with `--provider google-flow` is requested, redacts the endpoint in messages, and never logs page content or secrets. No web UI, HTTP API, daemon, planner, agent, publishing, analytics, or video pipeline was introduced. (Phase 4C later added an AI planning *adapter* behind its own port; it reads a credential variable only for that verb, sends it in one header, and reaches no browser, queue, or execution path.)
 
 **Gate:** build, typecheck, `corepack pnpm test` (75 tests, deterministic, no browser or Google account), and `corepack pnpm vertical-slice` all pass. Live Google Flow execution through the new commands is **NOT RUN**: it requires the user's authorized session.
 
@@ -119,6 +119,59 @@ run on the same data directory reusing the same job, asset version, and attempt.
 end from the CLI against the mock provider, writes no job and no queue entry, and
 nothing in this phase talks to Google Flow; no live-flow test was run.
 
+## Phase 4C — AI planner adapter
+
+Phase 4C puts an optional model in *front of* the Phase 4B engine and nothing behind it: an adapter behind the
+provider-neutral `AIPlanner` port turns the project's brief and definitions into a schema-validated
+`PlanningProposal`, which is normalized into `PlannerInput` and handed to `PlannerService`. **AI proposes.
+The deterministic planner normalizes. Phase 4A validates. Lifecycle services decide state. Execution is still
+outside this phase.** The port, proposal schema, provenance, security rules, and test map are
+[docs/ai-planning.md](./docs/ai-planning.md).
+
+### Phase 4C acceptance criteria
+
+1. **One engine:** no second planner, no bespoke `ProductionPlan` builder. The pipeline is
+   `brief → AIPlanner.propose() → proposal → schema validation → PlannerInput → 4B rules → 4A validation →
+   version`, and `PlannerService` stays the only author of plan rows.
+2. **Provider-neutral port:** `AIPlanner`, the request/response types, `PlanningProposal`, and the error
+   vocabulary live in `packages/core/src/ai-planning.ts` and name no vendor; the OpenAI-compatible
+   implementation lives in `providers/openai-chat`. A domain file naming a vendor would be a design error.
+3. **Structured output is mandatory:** a response must be a document of `ai-planning-proposal-v1` — unknown
+   fields, prose, wrong version, out-of-bounds text, fractional or out-of-range durations, over-capacity scene
+   lists, and duplicate keys are typed, path-pointing failures. There is no partial-acceptance path.
+4. **The domain wins on every conflict:** unknown or ambiguous character/world/DNA names, invented brief
+   constraints, and capabilities the providers do not declare fail closed with nothing written. The adapter may
+   not write planning tables, mint ids, choose a capability, or set a lifecycle status.
+5. **Determinism boundary respected:** the 12 rules, their order, and their fingerprints are unchanged; AI
+   metadata lives outside `content_hash` and outside `plannerInputFingerprint`/`outputFingerprint`, so an
+   adapter's identity cannot alter a plan and an equivalent proposal cannot look like an edit. Provider
+   temperature is adapter configuration; the planner's `seed` stays the planner's.
+6. **Provenance, not determinism theatre:** each authored version records adapter, adapter version, provider,
+   model, schema version, path, fallback, and the request/proposal/response digests in additive v6 columns, with
+   the same complete-set and write-once triggers as v5. Trace stages reuse the Phase 4B concept
+   (`AI_REQUEST`, `AI_RESPONSE`, `AI_SCHEMA_VALIDATION`, `NORMALIZATION`, `DETERMINISTIC_PLANNING`,
+   `DOMAIN_VALIDATION`) in the version's single trace, and `includeTrace` governs them as it governs the rule
+   steps.
+7. **No secrets, ever:** credentials are read from an environment variable by name at call time, sent in one
+   request header, and never stored on an instance, persisted, or printed; every message that can reach storage
+   or stdout is redacted, response bodies are byte-capped, and prompts/responses are digested rather than kept.
+8. **Idempotency separated by identity:** AI-invocation identity (the response digest) is distinct from
+   normalized planning identity (the planner's fingerprints). Equivalent normalized proposals reuse Phase 4B's
+   zero-write path; differing ones fork distinguishable versions. A reuse records no new provenance and says so.
+9. **Dry run and explicit fallback:** `--dry-run` may call the model and reports everything while committing no
+   version, job, queue entry, or execution state, and is not presented as a promise about a later call;
+   `--fallback=deterministic` is the only way a failed adapter still yields a plan, and it records the refusal.
+10. **Minimal surface, no execution:** one command, `planner ai-run`, with typed exit codes; no `planner
+    execute`, no `planner ai-execute`, no `--execute` flag, no submission, no queue work, no Google Flow or
+    browser call, no asset download, no rendering, no publishing, and no live-model dependency in build,
+    typecheck, test, or the vertical slice.
+
+**Gate:** build and typecheck clean across the workspace, `corepack pnpm test` **207/207** across 9 test suites (the 165 tests from
+Phases 0–4B unchanged and still passing, plus 3 storage v6-provenance, 18 services AI-planning, 14 adapter-contract,
+and 7 CLI tests), and `corepack pnpm vertical-slice` passing unchanged. Every test runs without a credential, a
+browser, or a network beyond localhost. Live Google Flow behavior remains **BLOCKED / NOT RUN**; the live model
+smoke is documented and optional, never a gate.
+
 ## Remaining milestones
 
 | Phase | Scope | Exit gate |
@@ -130,7 +183,8 @@ nothing in this phase talks to Google Flow; no live-flow test was run.
 | **4A — Creative planning domain** | Structured brief, versioned production plan, story, character/world profiles, Visual DNA, scene plans, generation specifications, deterministic validation, capability gating, execution preview, persistence, CLI, and operator read models. **No planner and no AI adapter.** | **Complete.** Build/typecheck/test/vertical-slice pass (115 tests); the lifecycle walkthrough is deterministic, plan content is validated and approved before it can be marked executable, and planning provably creates no jobs or queue entries. See [docs/planning-domain.md](./docs/planning-domain.md). |
 | **4B — Planner engine** | Deterministic authoring over the 4A contracts: `PlannerInput → PlannerRun` with a 12-rule versioned registry, canonical normalization, input/output fingerprints, plan identity, and authoring through the existing planning services only. Execution mapping exists as a **read-only intent emitter** at service level. | **Complete.** Build/typecheck/test/vertical-slice pass (165 tests); repeat runs are byte-identical; an unchanged re-run writes nothing; provenance is recorded per version and write-once; no job, queue entry, provider call, or UI is created, and no CLI command executes a plan. See [docs/planner-engine.md](./docs/planner-engine.md). |
 | **4B-follow-on — Planned execution** | Submitting `mapPlanToJobs` intents through the Phase 3 services (`CreateGenerationJobCommand`), plus scene-level regeneration of planned outputs and their attempt/QC lineage. | **Not started.** Deliberately out of 4B: the mapping and its deterministic ids are built and proven by tests, while the submit call stays an explicit later decision rather than a side effect of planning. |
-| **4C — AI planner adapter (optional)** | An adapter behind the planner interface that returns schema-validated planning data through explicit application tools; it may not touch storage, the queue, or a browser directly. | Every adapter output must pass the Phase 4A validator and lifecycle; rejection paths, fixtures, and no live-model dependence in CI. |
+| **4C — AI planner adapter** | Provider-neutral `AIPlanner` port plus the shipped `providers/openai-chat` adapter: brief and definitions in, a schema-validated `PlanningProposal` out, normalized into `PlannerInput` and authored by the Phase 4B engine through the Phase 4A services, with write-once AI provenance, dry run, explicit fallback, and one CLI verb. | **Complete.** Build/typecheck/test/vertical-slice pass (207 tests, none needing a credential); invalid or contradictory output fails closed with nothing written; AI metadata stays outside plan content; provenance names adapter, model, schema version, and digests without storing a prompt, a response, or a secret; no adapter path touches storage, the queue, a provider, or a browser, and no command executes a plan. See [docs/ai-planning.md](./docs/ai-planning.md). |
+| **4C-follow-on — Planned execution** | Turning an approved, executable plan into submitted Phase 3 work — the same gate the 4B-follow-on row describes, now reachable from either planning route. | **Not started.** Deliberately outside 4C: AI planning ends at a validated version, and submission stays an explicit operator action. |
 | **5 — Rich review and QC** | Add richer review categories/feedback and optional deterministic media probes or validated semantic checks. Keep unsupported metrics `NOT_EVALUATED`. | Evidence links to persisted records; no semantic score without a validated evaluator and reviewable evidence. |
 | **6 — Media pipeline** | Add isolated audio/narration/music/caption/timeline/render/export jobs. Preserve source asset/version provenance and support requested output formats. | Reproducible render fixture and format-specific QC trace to source scene versions, generations, assets, and reviews. |
 | **7 — Agent system** | Add specialist agents over typed, authorized domain tools and explicit workflow tasks. | Schema validation, tool authorization, audit logs, and policy tests; agents cannot write arbitrary DB rows. |

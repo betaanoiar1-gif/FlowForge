@@ -93,7 +93,7 @@ const LEGACY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_assets_sha256 ON assets(sha256);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 export function migrateDatabase(db: Database.Database): void {
   let version = Number(db.pragma("user_version", { simple: true }));
@@ -140,7 +140,96 @@ export function migrateDatabase(db: Database.Database): void {
       migrateToVersionFive(db);
       db.pragma("user_version = 5");
     }).immediate();
+    version = 5;
   }
+
+  if (version < 6) {
+    db.transaction(() => {
+      migrateToVersionSix(db);
+      db.pragma("user_version = 6");
+    }).immediate();
+  }
+}
+
+/**
+ * v6 — AI proposal provenance (Phase 4C).
+ *
+ * Additive only, and deliberately the same shape as v5: nullable columns on `production_plan_versions`
+ * with a complete-set rule and a write-once rule enforced in the database. A version planned without an
+ * AI adapter keeps `ai_adapter IS NULL`, which is how the read models say "proposed by the operator's
+ * own input" — an ordinary state, never an error.
+ *
+ * What is recorded is identity and digests: which adapter and model produced the proposal, which schema
+ * it claimed, whether an explicit fallback to the deterministic planner was used, and fingerprints of
+ * the request and of the validated proposal. What is never recorded is anything that could be replayed
+ * or leaked — no prompt, no response body, no endpoint, no credential, no header. `ai_response_fingerprint`
+ * is a digest of the response body for audit only, and it is NULL when there was no response.
+ */
+function migrateToVersionSix(db: Database.Database): void {
+  addColumn(db, "production_plan_versions", "ai_adapter TEXT");
+  addColumn(db, "production_plan_versions", "ai_adapter_version TEXT");
+  addColumn(db, "production_plan_versions", "ai_provider TEXT");
+  addColumn(db, "production_plan_versions", "ai_model TEXT");
+  addColumn(db, "production_plan_versions", "ai_schema_version TEXT");
+  addColumn(db, "production_plan_versions", "ai_path TEXT");
+  addColumn(db, "production_plan_versions", "ai_request_fingerprint TEXT");
+  addColumn(db, "production_plan_versions", "ai_proposal_fingerprint TEXT");
+  addColumn(db, "production_plan_versions", "ai_response_fingerprint TEXT");
+  addColumn(db, "production_plan_versions", "ai_fallback INTEGER");
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_ai_provenance_is_write_once
+      BEFORE UPDATE ON production_plan_versions
+      WHEN OLD.ai_adapter IS NOT NULL AND (
+        NEW.ai_adapter IS NOT OLD.ai_adapter
+        OR NEW.ai_adapter_version IS NOT OLD.ai_adapter_version
+        OR NEW.ai_provider IS NOT OLD.ai_provider
+        OR NEW.ai_model IS NOT OLD.ai_model
+        OR NEW.ai_schema_version IS NOT OLD.ai_schema_version
+        OR NEW.ai_path IS NOT OLD.ai_path
+        OR NEW.ai_request_fingerprint IS NOT OLD.ai_request_fingerprint
+        OR NEW.ai_proposal_fingerprint IS NOT OLD.ai_proposal_fingerprint
+        OR NEW.ai_fallback IS NOT OLD.ai_fallback
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'ai proposal provenance is recorded once and never rewritten');
+      END;
+
+    /*
+     * Half an AI provenance tuple is worse than none: "proposed by model X" without the schema version or
+     * the proposal digest cannot be re-derived later, and "fallback used" without an adapter would let a
+     * run look auditable when it is not. So the same complete-set rule as planner provenance, on INSERT
+     * and on UPDATE, with ai_response_fingerprint free to be NULL because a failed or fallback attempt
+     * legitimately has no response to digest.
+     */
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_ai_provenance_must_be_complete
+      BEFORE INSERT ON production_plan_versions
+      WHEN (NEW.ai_adapter IS NULL) <> (NEW.ai_adapter_version IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_provider IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_model IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_schema_version IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_path IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_request_fingerprint IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_proposal_fingerprint IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_fallback IS NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'ai proposal provenance must be recorded as a complete set');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_ai_provenance_must_be_complete_on_update
+      BEFORE UPDATE ON production_plan_versions
+      WHEN (NEW.ai_adapter IS NULL) <> (NEW.ai_adapter_version IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_provider IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_model IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_schema_version IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_path IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_request_fingerprint IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_proposal_fingerprint IS NULL)
+        OR (NEW.ai_adapter IS NULL) <> (NEW.ai_fallback IS NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'ai proposal provenance must be recorded as a complete set');
+      END;
+  `);
 }
 
 /**

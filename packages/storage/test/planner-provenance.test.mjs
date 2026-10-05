@@ -84,7 +84,7 @@ const PROVENANCE = Object.freeze({
 test("v5 exposes the nullable provenance columns and keeps them outside the content hash", async () => {
   const harness = await createRepository();
   try {
-    assert.equal(harness.jobs.getSchemaVersion(), 5);
+    assert.equal(harness.jobs.getSchemaVersion(), 6);
     const columns = harness.db
       .prepare("PRAGMA table_info(production_plan_versions)")
       .all()
@@ -304,6 +304,161 @@ test("a copied version carries no provenance, because a copy is not a planner ru
     assert.equal(copy.version.plannerTrace, undefined);
     // The copy does carry the copied content, which is the point of `plan revise`.
     assert.equal(copy.copiedScenePlans, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Phase 4C — AI proposal provenance                                            */
+/* -------------------------------------------------------------------------- */
+
+const AI = Object.freeze({
+  adapter: "openai-chat",
+  adapterVersion: "openai-chat-adapter-v1",
+  provider: "openai-compatible",
+  model: "some-model",
+  schemaVersion: "ai-planning-proposal-v1",
+  path: "ai-adapter",
+  requestFingerprint: "d".repeat(64),
+  proposalFingerprint: "e".repeat(64),
+  responseFingerprint: "f".repeat(64),
+  fallback: false,
+});
+
+test("v6 exposes the nullable AI provenance columns and keeps them outside the content hash", async () => {
+  const harness = await createRepository();
+  try {
+    const columns = harness.db
+      .prepare("PRAGMA table_info(production_plan_versions)")
+      .all()
+      .map((row) => ({ name: row.name, notNull: row.notnull === 1 }));
+    const expected = [
+      "ai_adapter",
+      "ai_adapter_version",
+      "ai_provider",
+      "ai_model",
+      "ai_schema_version",
+      "ai_path",
+      "ai_request_fingerprint",
+      "ai_proposal_fingerprint",
+      "ai_response_fingerprint",
+      "ai_fallback",
+    ];
+    for (const name of expected) {
+      const column = columns.find((entry) => entry.name === name);
+      assert.ok(column, `expected column ${name}`);
+      // A version nobody proposed with an AI must be representable without a placeholder row.
+      assert.equal(column.notNull, false, `${name} must stay nullable`);
+    }
+
+    const { version } = seedPlan(harness.planning);
+    assert.equal(version.ai, undefined);
+    const before = harness.planning.planVersionContentHash(version.id);
+    harness.planning.setPlanVersionProvenance({
+      planVersionId: version.id,
+      provenance: { ...PROVENANCE, ai: AI },
+      now: NOW,
+    });
+    // How the input was produced is not the content: recording it must not invalidate evidence.
+    assert.equal(harness.planning.planVersionContentHash(version.id), before);
+    const stored = harness.planning.getPlanVersion(version.id);
+    assert.deepEqual(stored.ai, AI);
+    // The AI stage steps belong to the version's one trace, never to a second copy inside provenance.
+    assert.equal("trace" in stored.ai, false);
+    assert.equal(stored.plannerVersion, PROVENANCE.plannerVersion);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("AI provenance is all-or-nothing, on insert and on update", async () => {
+  const harness = await createRepository();
+  try {
+    const { version } = seedPlan(harness.planning);
+    // The repository refuses an incomplete tuple before it can reach SQL.
+    for (const missing of ["model", "schemaVersion", "requestFingerprint", "proposalFingerprint"]) {
+      const partial = { ...AI };
+      delete partial[missing];
+      assert.throws(
+        () =>
+          harness.planning.setPlanVersionProvenance({
+            planVersionId: version.id,
+            provenance: { ...PROVENANCE, ai: partial },
+            now: NOW,
+          }),
+        undefined,
+        `a tuple without ${missing} must be refused`,
+      );
+    }
+    assert.equal(harness.planning.getPlanVersion(version.id).ai, undefined);
+    assert.equal(
+      harness.db.prepare("SELECT planner_version FROM production_plan_versions WHERE id = ?").get(version.id)
+        .planner_version,
+      null,
+      "a refused write must not leave half a provenance record behind",
+    );
+
+    // Bypassing the repository is what the triggers exist for: half a set is refused either way.
+    assert.throws(
+      () => harness.db.prepare("UPDATE production_plan_versions SET ai_model = 'x' WHERE id = ?").run(version.id),
+      /complete set/u,
+    );
+    assert.throws(
+      () =>
+        harness.db
+          .prepare(
+            `INSERT INTO production_plan_versions (id, plan_id, version_number, status, created_at, ai_adapter)
+             VALUES ('tampered-version', 'plan-1', 99, 'DRAFT', ?, 'openai-chat')`,
+          )
+          .run(NOW),
+      /complete set/u,
+    );
+    // The one field free to be NULL: no response to digest is a real state, not a half-written one.
+    harness.planning.setPlanVersionProvenance({
+      planVersionId: version.id,
+      provenance: { ...PROVENANCE, ai: { ...AI, responseFingerprint: null } },
+      now: NOW,
+    });
+    assert.equal(harness.planning.getPlanVersion(version.id).ai.responseFingerprint, null);
+    assert.equal(harness.db.prepare("PRAGMA foreign_key_check").all().length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("AI provenance identity is write-once, and only the response digest may be back-filled", async () => {
+  const harness = await createRepository();
+  try {
+    const { version } = seedPlan(harness.planning);
+    harness.planning.setPlanVersionProvenance({
+      planVersionId: version.id,
+      provenance: { ...PROVENANCE, ai: { ...AI, responseFingerprint: null } },
+      now: NOW,
+    });
+    for (const column of ["ai_model", "ai_adapter", "ai_path", "ai_proposal_fingerprint", "ai_fallback"]) {
+      assert.throws(
+        () => harness.db.prepare(`UPDATE production_plan_versions SET ${column} = NULL WHERE id = ?`).run(version.id),
+        /recorded once and never rewritten|complete set/u,
+        `${column} must not be rewritable`,
+      );
+      assert.throws(
+        () =>
+          harness.db
+            .prepare(`UPDATE production_plan_versions SET ${column} = CASE WHEN ${column} IS NULL THEN 'tampered' ELSE 'tampered' END WHERE id = ?`)
+            .run(version.id),
+        /recorded once/u,
+        `${column} must not be replaceable`,
+      );
+    }
+    // The documented exemption, and nothing else: a response digest may arrive later.
+    harness.db
+      .prepare("UPDATE production_plan_versions SET ai_response_fingerprint = ? WHERE id = ?")
+      .run("a".repeat(64), version.id);
+    assert.equal(harness.planning.getPlanVersion(version.id).ai.responseFingerprint, "a".repeat(64));
+    // Content columns and planner provenance are untouched by any of the above.
+    assert.equal(harness.planning.planVersionContentHash(version.id), harness.planning.getPlanVersion(version.id).contentHash);
+    assert.equal(harness.planning.getPlanVersion(version.id).plannerSeed, 7);
   } finally {
     await harness.close();
   }
