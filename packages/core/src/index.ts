@@ -48,6 +48,13 @@ export interface GenerationJob {
   error?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Which plan materialization submitted this job, when it came from a plan (Phase 5). Deliberately
+   * outside `idempotencyKey`, which is computed from what the work *is*: re-running the same planned
+   * content must reuse the stored job, and an unrelated Phase 3 request for that same content must reuse
+   * it too rather than duplicate provider work under a different provenance.
+   */
+  planExecutionId?: Id;
 }
 
 export const JOB_TRANSITIONS: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
@@ -268,6 +275,15 @@ export interface SceneVersionRecord {
   metadata?: Record<string, unknown>;
   parentVersionId?: Id;
   createdAt: string;
+  /**
+   * Present only when Phase 5 materialized this version from a plan (see `SceneVersionPlanLink`): the
+   * execution that created it and the plan-side rows it executes. A hand-authored scene version has none
+   * of these, which is an ordinary state, not a defect — exactly how planner provenance behaves.
+   */
+  planExecutionId?: Id;
+  planVersionId?: Id;
+  scenePlanId?: Id;
+  generationSpecId?: Id;
 }
 
 export interface CharacterRecord {
@@ -373,3 +389,4 @@ export interface ReviewRecord {
 export * from "./canonical-json.js";
 export * from "./planning.js";
 export * from "./ai-planning.js";
+export * from "./plan-execution.js";

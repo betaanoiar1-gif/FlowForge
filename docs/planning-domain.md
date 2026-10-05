@@ -207,7 +207,9 @@ plan create → validate → approve → markExecutable
 `RequestGenerationCommand` inputs it would produce (title, prompt, mode, output count, aspect ratio,
 duration, references, capability requirements, candidate providers). **Phase 4A does not execute a
 plan** and there is no second execution engine: the queue, worker, leases, and retry policy stay the
-only path to a provider.
+only path to a provider. Phase 5 later added the one command allowed to cross that line — `plan execute`, which
+*materializes* durable queued work through the services above and still runs nothing itself
+([docs/plan-execution.md](./plan-execution.md)).
 
 ## 7. Persistence
 
@@ -397,6 +399,9 @@ flowforge plan report --plan-id PLAN [--version N]      # the recorded report, w
 flowforge plan approve --plan-id PLAN [--version N] [--reviewer NAME]
 flowforge plan executable --plan-id PLAN [--version N] [--providers mock,google-flow]   # capability gate
 flowforge plan preview --plan-id PLAN [--version N]     # execution mapping, never executes
+flowforge plan execute --plan-id PLAN [--dry-run] …     # Phase 5: materializes queued work (see docs/plan-execution.md)
+flowforge plan execution --plan-id PLAN                  # Phase 5: read-only state of one materialization
+flowforge plan executions --plan-id PLAN                 # Phase 5: every materialization of a version
 flowforge plan revise --plan-id PLAN [--note TEXT]      # copy the current version into a new DRAFT
 flowforge plan reopen --plan-id PLAN                     # VALIDATED -> DRAFT after edits
 flowforge plan archive --plan-id PLAN                    flowforge plan set-current-version --plan-id PLAN --version N
@@ -431,8 +436,8 @@ Rejections are typed: `PLAN_NOT_EDITABLE` and `PLAN_VALIDATION_REQUIRED` surface
 - **4B — Planner Engine** (*delivered*): deterministic authoring (brief → plan tree) through the 4A
   contracts only. It writes via `ProductionPlanService` and its sibling plan methods, records write-once
   provenance, reuses an identical version instead of writing, and exposes no execution command —
-  `mapPlanToJobs` emits Phase 3 command intents for tests, and submitting them stays an explicit later
-  decision. Specification: [planner-engine.md](./planner-engine.md).
+  `mapPlanToJobs` emits Phase 3 command intents for tests, and submitting them stayed an explicit later
+  decision (delivered by Phase 5, which submits only through the existing services, in one transaction). Specification: [planner-engine.md](./planner-engine.md).
 - **4C — AI Planner Adapter** (*delivered*): an optional adapter behind the domain's `AIPlanner` port
   returning schema-validated planning data, which flows through normalization, the 4B engine, and the 4A
   validator like any other input. It adds no agent, no autonomous planning, no provider-implementation change
@@ -440,6 +445,12 @@ Rejections are typed: `PLAN_NOT_EDITABLE` and `PLAN_VALIDATION_REQUIRED` surface
   daemon, or event-bus change, and no web UI; the adapter owns no transaction, no lifecycle write, and no
   execution path, and only the AI verb reads a credential variable. Specification:
   [ai-planning.md](./ai-planning.md).
+- **Phase 5 — Plan → executable work → durable execution** (*delivered*): one service and one transaction
+  materialize an `EXECUTABLE` version into `Scene` + `SceneVersion` + `GenerationJob` + queue items, with a
+  readiness gate that writes nothing when it refuses, a deterministic execution fingerprint that makes re-running
+  idempotent, and execution left entirely to the existing queue, worker, provider registry, QC, and review path.
+  Three thin commands only (`plan execute`, `plan execution`, `plan executions`). Specification:
+  [plan-execution.md](./plan-execution.md).
 
 ## 13. Verified operator walkthrough
 

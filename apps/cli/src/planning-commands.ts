@@ -5,6 +5,8 @@ import type {
 } from "@flowforge/core";
 import type {
   ExecutionPreview,
+  PlanExecutionReport,
+  PlanExecutionState,
   PlanDetail,
   PlanListItem,
   PlanScenePlanRow,
@@ -371,6 +373,65 @@ export const PLANNING_COMMANDS: Record<string, CommandDefinition> = {
       emit(globals, preview, renderPreview);
     },
   },
+  "plan execute": {
+    usage:
+      "plan execute --plan-id ID [--version N] [--providers CSV] [--max-attempts N] [--dry-run] [--json]",
+    summary:
+      "Materialize an EXECUTABLE plan version into scenes, scene versions, and queued generation jobs. Creates durable work; runs nothing.",
+    flags: ["plan-id", "version", "providers", "max-attempts", "dry-run"],
+    execution: false,
+    run({ options, globals, app }) {
+      const report = app.planExecution.materialize({
+        planId: requireString(options, "plan-id"),
+        versionNumber: optionalNumber(options, "version"),
+        providers: csvList(options, "providers"),
+        maxAttempts: optionalNumber(options, "max-attempts"),
+        dryRun: options["dry-run"] === true,
+      });
+      emit(globals, report, renderMaterialization);
+      // A dry run answers a question and does not throw when the answer is "not yet", so the blocked signal
+      // has to be carried by the exit code — the same convention `plan status` uses for findings errors.
+      if (report.blockers.length > 0) process.exitCode = EXIT_BLOCKED;
+    },
+  },
+  "plan execution": {
+    usage: "plan execution --plan-id ID [--version N] [--execution-id ID] [--json]",
+    summary:
+      "Show what one materialization became: jobs, queue state, attempts, assets, QC, and review. Read-only.",
+    flags: ["plan-id", "version", "execution-id"],
+    execution: false,
+    run({ options, globals, app }) {
+      const state = app.planExecution.status({
+        planId: requireString(options, "plan-id"),
+        versionNumber: optionalNumber(options, "version"),
+        executionId: optionalString(options, "execution-id"),
+      });
+      emit(globals, state, renderExecutionState);
+    },
+  },
+  "plan executions": {
+    usage: "plan executions --plan-id ID [--version N] [--json]",
+    summary: "List every materialization recorded for a plan version, oldest first.",
+    flags: ["plan-id", "version"],
+    execution: false,
+    run({ options, globals, app }) {
+      const rows = app.planExecution.executions({
+        planId: requireString(options, "plan-id"),
+        versionNumber: optionalNumber(options, "version"),
+      });
+      emit(globals, rows, (value) =>
+        value.length === 0
+          ? ["no materialization recorded for this plan version"]
+          : [
+              "execution id                            fingerprint (short)  jobs  reused  provider",
+              ...value.map(
+                (row) =>
+                  `${short(row.id)}  ${row.executionFingerprint.slice(0, 12)}  ${String(row.jobCount).padStart(4)}  ${String(row.reusedJobCount).padStart(6)}  ${row.providerId}`,
+              ),
+            ],
+      );
+    },
+  },
   "plan revise": {
     usage: "plan revise --plan-id ID [--version N] [--note TEXT]",
     summary: "Copy the current version into a new DRAFT version (approved versions are never edited).",
@@ -622,6 +683,11 @@ function providerSelection(options: ParsedOptions): string[] | undefined {
 
 type ParsedOptions = ParsedArgs["options"];
 
+/** `CREATED` → `created`: the read model keeps machine-stable enums, the renderer keeps them readable. */
+function lower(value: string): string {
+  return value.toLowerCase();
+}
+
 function jsonList<T>(options: ParsedOptions, name: string): T[] | undefined {
   const value = parseJsonOption<unknown>(options, name);
   if (value === undefined) return undefined;
@@ -789,6 +855,55 @@ export function renderSceneRow(row: PlanScenePlanRow, indent: number): string[] 
     ...row.specs.map((spec) => `${pad}    instructions: ${spec.instructions}`),
   ];
 }
+
+
+function renderMaterialization(report: PlanExecutionReport): string[] {
+  const lines = [
+    `${report.dryRun ? "dry run — would materialize" : "materialized"} plan ${report.planId} v${report.versionNumber} (${report.planVersionStatus})`,
+    `  execution: ${report.executionId ? short(report.executionId) : "not written"}  fingerprint: ${report.executionFingerprint.slice(0, 16)}…  rules: ${report.rulesVersion}`,
+    `  providers: ${report.providerId}   units: ${report.counts.units} of ${report.counts.generationSpecs} spec(s)`,
+    `  scenes ${report.counts.scenesCreated} created / ${report.counts.scenesReused} reused · versions ${report.counts.sceneVersionsCreated} created / ${report.counts.sceneVersionsReused} reused`,
+    `  jobs ${report.counts.jobsCreated} created / ${report.counts.jobsReused} reused · queue items ${report.counts.queueItemsCreated}`,
+  ];
+  for (const unit of report.units) {
+    lines.push(
+      `  ${unit.sceneKey}/${unit.specNumber} ${unit.kind}  scene ${lower(unit.scene)} · version ${lower(unit.sceneVersion)} · job ${short(unit.jobId)} ${lower(unit.job)} (${unit.jobStatus})${unit.queueStatus ? ` · queue ${unit.queueStatus}` : ""} · priority ${unit.priority}${unit.dependsOn.length > 0 ? ` · after ${unit.dependsOn.join(", ")}` : ""}`,
+    );
+  }
+  for (const skip of report.skipped) {
+    lines.push(`  skipped ${skip.specId} (${skip.sceneKey}): ${skip.reason}`);
+  }
+  for (const blocker of report.blockers) {
+    lines.push(`  blocked ${blocker.code}${blocker.subject ? ` (${short(blocker.subject)})` : ""}: ${blocker.detail}`);
+  }
+  for (const notice of report.notices) {
+    lines.push(`  ${notice.severity.toLowerCase()} ${notice.code}: ${notice.detail}`);
+  }
+  lines.push(`  next: ${report.nextAction}`);
+  return lines;
+}
+
+function renderExecutionState(state: PlanExecutionState): string[] {
+  const lines = [
+    `plan execution ${state.executionId}  (${state.providerId}, rules ${state.rulesVersion})`,
+    `  fingerprint: ${state.executionFingerprint.slice(0, 16)}…  scope: ${short(state.mappingScope)}  materialized at ${state.materializedAt}`,
+    `  units ${state.totals.units} · queued ${state.totals.queued} · running ${state.totals.running} · succeeded ${state.totals.succeeded} · failed ${state.totals.failed} · cancelled ${state.totals.cancelled}`,
+    `  qc passed ${state.totals.qcPassed} / failed ${state.totals.qcFailed} · approved ${state.totals.approved} · selected ${state.totals.selected}`,
+  ];
+  for (const unit of state.units) {
+    lines.push(
+      `  ${unit.sceneKey}/${short(unit.specId)}  job ${unit.jobStatus}${unit.queueStatus ? ` · queue ${unit.queueStatus}` : ""} · attempts ${unit.attemptCount}/${unit.maxAttempts}${unit.qcStatus ? ` · qc ${unit.qcStatus}` : ""}${unit.reviewStatus ? ` · review ${unit.reviewStatus}` : ""}${unit.selected ? " · selected" : ""}`,
+    );
+  }
+  for (const blocker of state.blockers) {
+    lines.push(`  ${blocker.code}: ${blocker.detail}`);
+  }
+  for (const hint of state.hints) {
+    lines.push(`  next: ${hint}`);
+  }
+  return lines;
+}
+
 
 function renderValidation(report: PlanValidationView): string[] {
   return [

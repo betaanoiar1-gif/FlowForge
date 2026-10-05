@@ -22,10 +22,19 @@ Visual DNA references, ordered `ScenePlan`s, and provider-neutral `GenerationSpe
 explicit `DRAFT → VALIDATED → APPROVED → EXECUTABLE` lifecycle decided by a pure deterministic validator
 and by the *existing* provider capability model, and approval is bound to a content hash so edited content
 can never be approved by old evidence. Planning never creates a scene, a job, a queue item, or a provider
-call: `plan preview` derives the exact Phase 3 commands a later phase would issue. Phase 4B (deterministic
+call: `plan preview` derives the exact Phase 3 commands a later phase would issue, and Phase 5's `plan execute`
+is the single command allowed to issue them — as durable queued work, not as execution. Phase 4B (deterministic
 planner engine) and Phase 4C (optional AI planner adapter) are the only layers that may *author* this data,
 and both consume the same contracts. The model, lifecycle, validation rules, persistence, and CLI are
 documented in [docs/planning-domain.md](./docs/planning-domain.md).
+
+Phase 5 puts the *bridge* after that engine: `PlanExecutionService` reads one `EXECUTABLE` version, assesses
+readiness (lifecycle, current validation evidence, per-scene soundness, and capability support re-checked against
+the current registry), maps it to units through 4B's `mapPlanToJobs`, and writes scenes, scene versions, jobs, and
+queue items in **one** transaction. Same plan version and same rules mean the same execution identity, so
+re-running materializes nothing new; a failure anywhere rolls the whole unit back. Execution itself — claiming,
+leases, retries, provider calls, QC, review — is unchanged Phase 1/Phase 3 machinery, and the contract is
+[docs/plan-execution.md](./docs/plan-execution.md).
 
 Phase 4C puts an optional **AI planner adapter** in front of that engine: `AiPlannerService` reads the same
 brief and definitions, asks a provider-neutral `AIPlanner` port for a `PlanningProposal`, refuses anything
@@ -62,13 +71,15 @@ apps/
 
 packages/
   core/                       typed entities, statuses, provider port, canonical JSON/fingerprints,
-                                and planner/validator version constants
-  storage/                    SQLite v6 migrations and transactional repositories (execution + planning state)
+                                planner/validator version constants, and the plan-execution contracts
+  storage/                    SQLite v7 migrations and transactional repositories (execution + planning state)
   queue/                      durable claim/lease/recovery worker
   services/                   application services: validation, orchestration, read models (execution +
                                 planning), the deterministic planner engine, the AI planning orchestration
-                                (schema validation, translation, provenance), and the read-only
-                                plan→execution mapping
+                                (schema validation, translation, provenance), the read-only
+                                plan→execution mapping, and the Phase 5 materialization service
+                                (`src/execution/`) that turns an EXECUTABLE version into durable queued work
+                                through the engine above — never a second one
   assets/                     filesystem asset bytes and streaming SHA-256
   qc/                         deterministic file/MIME/image QC
   browser/                    Playwright/CDP gateway for a user-controlled session
@@ -82,10 +93,10 @@ providers/
 
 | Package | Current responsibility | Important limit |
 | --- | --- | --- |
-| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding/record, planner trace step) with the plan-version transition table, the canonical JSON/fingerprint helpers, and the `DETERMINISTIC_PLANNER_VERSION`/`PLANNING_RULES_VERSION` constants, and the Phase 4C planner port with its versioned proposal schema (`AIPlanner`, `AIPlanningRequest`/`AIPlanningResponse`, `PlanningProposal`, `AI_PLANNING_SCHEMA_VERSION`, `AI_PROPOSAL_LIMITS`, `PlanAiProvenance`, `AIPlannerErrorCode`) and trace stages; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job, scene, and project status transition tables. | No API schema layer, UI, or workflow-agent tools; no Flow/browser concepts; no planner, adapter, LLM, or heuristic authoring logic; the domain names no model vendor, and owning a port is not owning a proposal decision. |
-| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection, guarded scene/project status writes, and operator listing filters; the Phase 4A planning tables, lifecycle triggers, content hashing, plus the Phase 4B v5 planner-provenance columns and their write-once/complete-set triggers, and the Phase 4C v6 AI-proposal provenance columns (ten nullable `ai_*` columns with the same complete-set and write-once enforcement, `ai_response_fingerprint` free to be NULL or back-filled), and `SqlitePlanningRepository`; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
+| `packages/core` | Project/scene/version/job/attempt/queue/asset/QC/review contracts; planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding/record, planner trace step) with the plan-version transition table, the canonical JSON/fingerprint helpers, the `DETERMINISTIC_PLANNER_VERSION`/`PLANNING_RULES_VERSION`/`EXECUTION_RULES_VERSION` constants, the Phase 5 `PlanExecutionRecord`/`PlanExecutionStatus` materialization-anchor contract with its fingerprint and id namespaces, and the Phase 4C planner port with its versioned proposal schema (`AIPlanner`, `AIPlanningRequest`/`AIPlanningResponse`, `PlanningProposal`, `AI_PLANNING_SCHEMA_VERSION`, `AI_PROPOSAL_LIMITS`, `PlanAiProvenance`, `AIPlannerErrorCode`) and trace stages; explicit provider capabilities; provider-neutral async methods; request context may be passed to lookup/status/download for safe reconciliation; job, scene, and project status transition tables. | No API schema layer, UI, or workflow-agent tools; no Flow/browser concepts; no planner, adapter, LLM, or heuristic authoring logic; the domain names no model vendor, and owning a port is not owning a proposal decision. |
+| `packages/storage` | SQLite WAL, foreign keys, busy timeout, versioned migrations, projects/scenes/immutable scene versions, canonical generation identity, queue items/leases, attempts, asset versions, QC, review, selection, guarded scene/project status writes, and operator listing filters; the Phase 4A planning tables, lifecycle triggers, content hashing, plus the Phase 4B v5 planner-provenance columns and their write-once/complete-set triggers, the Phase 4C v6 AI-proposal provenance columns (ten nullable `ai_*` columns with the same complete-set and write-once enforcement, `ai_response_fingerprint` free to be NULL or back-filled), the Phase 5 v7 materialization layer (`plan_executions` with immutability triggers, four complete-set link columns on `scene_versions`, a write-once `plan_execution_id` on `generation_jobs`, and a `transaction()` passthrough so a service can group reviewed writes), and `SqlitePlanningRepository`; retains character and legacy asset methods. | SQLite remains a local/single-worker store; no event log/outbox or distributed concurrency. |
 | `packages/queue` | Atomic claim, lease heartbeat, expired-lease recovery, same-attempt provider lookup, retry classification, file import/QC, and transactional finalization/ack. | Current worker accepts one distinct output; no background daemon/service. |
-| `packages/services` | Typed application services (`Project`, `Scene`, `Generation`, `Queue`, `Review`, `Production`) over the existing repository/queue/worker; command validation, capability admission, derived production readiness, and operator read models; the Phase 4A planning services (briefs, definitions, plans, validation, reads) including the pure deterministic validator and the capability gate; and the Phase 4B deterministic planner (pure 12-rule engine), `PlannerService`, and the read-only `mapPlanToJobs` seam; and the Phase 4C AI planning layer — `AiPlannerService`, the proposal schema validator, `translateProposal`, and the namespaced request/proposal/response digests. | Owns no SQL, queue, retry, provider, browser, or asset-byte logic; cannot bypass a repository transition guard; validation and approval never execute anything. The AI layer owns no transaction and no lifecycle write, delegates authoring to `PlannerService`, and treats an adapter answer as untrusted data: it may build planner input, never a plan. |
+| `packages/services` | Typed application services (`Project`, `Scene`, `Generation`, `Queue`, `Review`, `Production`) over the existing repository/queue/worker; command validation, capability admission, derived production readiness, and operator read models; the Phase 4A planning services (briefs, definitions, plans, validation, reads) including the pure deterministic validator and the capability gate; and the Phase 4B deterministic planner (pure 12-rule engine), `PlannerService`, the read-only `mapPlanToJobs` seam; the Phase 4C AI planning layer — `AiPlannerService`, the proposal schema validator, `translateProposal`, and the namespaced request/proposal/response digests; and the Phase 5 execution layer — `PlanExecutionService` with its pure readiness, mapping, idempotency, and recovery modules, materializing one `EXECUTABLE` version into durable work atomically and idempotently. | Owns no SQL, queue, retry, provider, browser, or asset-byte logic; cannot bypass a repository transition guard; validation and approval never execute anything. Phase 5 materializes work but never runs it: it enqueues through `GenerationService`, owns no lease, attempt, retry, or asset write, and refuses with zero rows written when readiness fails. The AI layer owns no transaction and no lifecycle write, delegates authoring to `PlannerService`, and treats an adapter answer as untrusted data: it may build planner input, never a plan. |
 | `packages/assets` | Safe local path construction, atomic file publication, integrity checking, streaming SHA-256, bytes outside SQLite. | No object-store backend or retention/garbage-collection service. |
 | `packages/qc` | Deterministic existence, readability, MIME/signature, size, checksum, and supported image dimensions. | No semantic continuity QC, video/audio probe, or unsupported-format dimension guess. |
 | `providers/mock` | `SUCCESS`, `TRANSIENT_FAILURE`, `PERMANENT_FAILURE`, `TIMEOUT`, and `DUPLICATE_RESULT`; request-key manifests and deterministic local image bytes. | Proves the orchestration contract only; it is not a generative model. |
@@ -162,7 +173,7 @@ Queries are read-only compositions of repository reads: `ProjectOverview`, `Scen
 
 `QueueService` adds one protective rule: before driving the worker it checks that every queued job's provider is one this worker serves, and otherwise refuses with `PROVIDER_COVERAGE_INCOMPLETE`. That prevents an operator from letting the durable worker convert mismatched work into permanent `PROVIDER_MISMATCH` failures.
 
-`apps/cli` routes a leading bare word to the operator commands and keeps the Phase 1 flag-only invocation as the vertical slice. The Phase 4B planner surface (`planner rules`, `planner run`) and Phase 4C's single AI verb (`planner ai-run`) join the same command table, and no command in it executes a plan — the tests assert that `planner execute`, `planner ai-execute`, and an `--execute` flag do not exist. Human and `--json` output come from the same read model; errors carry a stable code, and exit codes are `0` ok, `1` error, `2` usage error, `3` state legitimately blocks the command. Details and the full command list are in [docs/application-services.md](./docs/application-services.md).
+`apps/cli` routes a leading bare word to the operator commands and keeps the Phase 1 flag-only invocation as the vertical slice. The Phase 4B planner surface (`planner rules`, `planner run`) and Phase 4C's single AI verb (`planner ai-run`) join the same command table, and no planning command executes a plan — the tests assert that `planner execute`, `planner ai-execute`, and an `--execute` flag do not exist. Phase 5 adds exactly one execution-adjacent verb, `plan execute`, and it *materializes* durable work for the existing worker rather than performing any of it; `plan execution` and `plan executions` read the result back. Human and `--json` output come from the same read model; errors carry a stable code, and exit codes are `0` ok, `1` error, `2` usage error, `3` state legitimately blocks the command. Details and the full command list are in [docs/application-services.md](./docs/application-services.md).
 
 ## 7. Creative planning domain, the deterministic planner, and the AI adapter (Phases 4A–4C)
 
@@ -210,9 +221,20 @@ CreativeBrief (project-scoped immutable snapshots, versioned by content)
   route — AI metadata lives outside `content_hash` and outside the planner's input/output fingerprints, so an
   equivalent proposal is the same plan, and a different adapter identity cannot make a plan look edited.
 - **Planning/execution boundary.** No planning write touches `generation_jobs` or `queue_items`, and
-  `scene_plans` are not `scenes`. The bridge is a read-only execution preview plus the existing Phase 3
-  commands; there is no second execution engine. `mapPlanToJobs` (4B) emits typed Phase 3 commands with
-  deterministic `jobKey`s and is proven by tests only — Phase 4B ships no CLI command that executes a plan.
+  `scene_plans` are not `scenes`. `mapPlanToJobs` (4B) stays a read-only emitter of typed Phase 3 commands with
+  deterministic `jobKey`s, and no planning or planner command executes or submits anything. Since Phase 5 the
+  boundary is *crossed deliberately, once, by one command*: `plan execute` materializes an `EXECUTABLE` version
+  through `PlanExecutionService`, which reaches the job and queue tables only via `GenerationService` and
+  `SceneService`. There is still no second execution engine, queue, worker, or retry policy.
+- **Materialization is one transaction with one identity.** Readiness is assessed before any write and refuses
+  with `EXECUTION_NOT_READY` / `EXECUTION_CAPABILITY_UNAVAILABLE` and zero rows; the deterministic
+  `executionFingerprint` covers only the inputs that decide what work exists (never a clock, a lease, an attempt
+  count, or a provider response), so re-running `materialize` reuses the same scene versions, jobs, and queue
+  items instead of forking a second execution; scenes are created only when absent and reused scenes keep their
+  project-unique numbers; and `plan_executions`, the four `scene_versions` link columns, and
+  `generation_jobs.plan_execution_id` are the durable record of the bridge, enforced by v7 triggers rather than by
+  caller discipline. Recovery stays the queue's: an expired lease resumes the same attempt, and
+  `plan execution` only reports. See [docs/plan-execution.md](./docs/plan-execution.md).
 - **No event bus.** Planning services call each other directly through `createApplication`; `packages/events`
   stays unused, as decided in Phase 3.
 
@@ -221,7 +243,7 @@ CreativeBrief (project-scoped immutable snapshots, versioned by content)
 - No web UI or HTTP API product surface, and no worker daemon: review, selection, and readiness are operator commands over the services, and execution is on demand (`queue run`), not a background loop.
 - No live-validated Google Flow behavior: the single-image browser adapter is fake-tested, but real account eligibility, selectors, generation status, result correlation, and download remain untested. Authentication is manual; no provider credentials are stored.
 - No multi-output persistence in one job, object storage, global deduplication, or retention/repair daemon.
-- The Phase 4A planning graph (brief, plan versions, story, cast, worlds, Visual DNA, scene plans, generation specs) exists and is validated, and the Phase 4B **deterministic** planner authors it. Phase 4C delivered the AI *proposal* adapter behind that boundary, and still absent are agents, autonomous planning loops, and any automation that turns an executable plan into scenes/jobs — `mapPlanToJobs` emits command intents and is never invoked from a command, so submission remains the operator's explicit Phase 3 action. No audio, timeline, render/export, publishing, or analytics.
+- The Phase 4A planning graph (brief, plan versions, story, cast, worlds, Visual DNA, scene plans, generation specs) exists and is validated, the Phase 4B **deterministic** planner authors it, and Phase 4C delivered the AI *proposal* adapter behind that boundary. Phase 5 closed the submission gap the 4B/4C notes left open: an `EXECUTABLE` version can now be materialized into scenes, scene versions, jobs, and queue items by exactly one command (`plan execute`) through one service and one transaction. Still absent are agents, autonomous planning loops, any scheduler or policy that decides *on its own* to materialize a plan, and any command that runs the work it enqueued — materialization never submits to a provider, and the operator (or a later daemon) drives `queue run`. No audio, timeline, render/export, publishing, or analytics.
 - No durable event/outbox system or distributed queue.
 - No semantic/image similarity evaluator, video/audio codec probe, duration QC, or unsupported image-dimension guess.
 
@@ -262,6 +284,16 @@ google-flow 22, queue 7, services 64, cli 18), and `corepack pnpm vertical-slice
 exactly as Phases 1–4A left it: `SUCCEEDED` job, `ACKED` queue, `PASSED` QC, `APPROVED` review, and a repeat
 run in the same data directory reusing the same job, asset version, and attempt (the identifiers themselves are
 per-database, as they have been since Phase 1). Live Google Flow behavior remains **BLOCKED / NOT RUN**.
+
+Phase 5 adds 38 tests and edits only two assertions, both in `apps/cli/test/planning-cli.test.mjs`, where the
+Phase 4A claim "there is no planning command that executes" had to be restated because Phase 5's brief sanctions
+`plan execute`: the surviving invariant is asserted instead — reading a plan creates nothing, and the one new verb
+enqueues for the existing worker rather than executing — and the help assertion now checks that no *direct*
+provider or browser verb exists while `plan execute` is advertised. `packages/storage` +9 (v7 shape, anchor
+immutability, complete-set and write-once link triggers, `transaction()` commit/rollback and savepoint nesting,
+ordered reads), `packages/services` +19 (the brief's A–J matrix against the real queue/worker/MockProvider/QC/review
+stack, plus purity and secret-scan guards), and `apps/cli` +10 (8 verb tests across separate processes and a
+2-test golden vertical slice that re-runs the whole tail and proves nothing duplicates).
 
 Phase 4C adds 28 tests without changing any earlier one: `packages/storage` 3 (the v6 columns outside the
 content hash, all-or-nothing provenance on insert and update including the bypassed-repository case, and

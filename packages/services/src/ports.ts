@@ -50,6 +50,15 @@ export type JobRepository = Pick<
   | "decideReview"
   | "selectApprovedAssetVersion"
   | "getSelectedAssetVersion"
+  // Plan materialization (Phase 5). `transaction` is the atomicity primitive that lets one service call group
+  // several of the reviewed writes above into a single all-or-nothing unit; the two `planExecution` reads and
+  // the one write are the durable record of a materialization. No SQL travels with them: the repository still
+  // owns every statement, and the callback may contain nothing but repository and service calls.
+  | "transaction"
+  | "createPlanExecutionWithCreated"
+  | "getPlanExecution"
+  | "listPlanExecutionsForVersion"
+  | "listSceneVersionsByPlanExecution"
 >;
 
 /** Read and recovery view of the durable queue. Claiming stays inside the worker. */

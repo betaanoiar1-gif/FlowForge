@@ -1,4 +1,4 @@
-import type { PlanAiProvenance, PlannerTraceStep, SceneStatus } from "@flowforge/core";
+import type { PlanAiProvenance, PlannerTraceStep, SceneStatus, SceneVersionPlanLink } from "@flowforge/core";
 import type {
   PlannerCastInput,
   PlannerOptionsInput,
@@ -47,6 +47,12 @@ export interface AddSceneVersionCommand extends SceneIdCommand {
   metadata?: Record<string, unknown>;
   parentVersionId?: string;
   sceneVersionId?: string;
+  /**
+   * Plan origin, set only by Phase 5 materialization (see `SceneVersionPlanLinkInput` in storage). An
+   * operator command never supplies it: recording that a version came from a plan is the materialization's
+   * fact to state, and the repository requires the whole tuple or none of it.
+   */
+  planLink?: SceneVersionPlanLink;
 }
 
 export interface SetCurrentSceneVersionCommand extends SceneIdCommand {
@@ -73,6 +79,11 @@ export interface RequestGenerationCommand extends CommandOptions {
   priority?: number;
   /** Permits enqueueing work whose provider is not registered in this process. */
   allowUnconfiguredProvider?: boolean;
+  /**
+   * Which plan materialization is submitting this job (Phase 5). Recorded beside the job, never inside its
+   * idempotency identity, so identical content stays one job whoever asked for it.
+   */
+  planExecutionId?: string;
 }
 
 export interface JobIdCommand extends CommandOptions {

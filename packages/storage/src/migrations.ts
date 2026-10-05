@@ -93,7 +93,7 @@ const LEGACY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_assets_sha256 ON assets(sha256);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export function migrateDatabase(db: Database.Database): void {
   let version = Number(db.pragma("user_version", { simple: true }));
@@ -149,6 +149,122 @@ export function migrateDatabase(db: Database.Database): void {
       db.pragma("user_version = 6");
     }).immediate();
   }
+
+  if (version < 7) {
+    db.transaction(() => {
+      migrateToVersionSeven(db);
+      db.pragma("user_version = 7");
+    }).immediate();
+  }
+}
+
+/**
+ * v7 — plan materialization records (Phase 5).
+ *
+ * Additive again, and still no rewrite: one new table plus four nullable link columns. `plan_executions`
+ * is the idempotency anchor for the bridge between planning and execution — one row per
+ * (plan version, execution fingerprint) — and the link columns say which planned scene plan and generation
+ * spec each durable scene version executes, and which materialization submitted each job.
+ *
+ * Two shape decisions carry the weight:
+ *
+ * 1. **A materialization is immutable.** `UNIQUE(plan_version_id, execution_fingerprint)` makes a repeat
+ *    call land on the same row rather than forking a second execution of one plan, and the no-update /
+ *    no-delete triggers mean an operator can always read back what was materialized and cannot quietly
+ *    retarget it at different content afterwards. `RESTRICT` on the parent keys keeps that true: the plan
+ *    version a run was materialized from cannot disappear underneath it.
+ * 2. **The links are nullable and never rewritten.** A hand-authored scene version or a plain Phase 3 job
+ *    has none of them, which is an ordinary state. `generation_jobs.plan_execution_id` deliberately does
+ *    *not* participate in `idempotency_key` (that digest is computed from what the work *is*), so re-running
+ *    the same planned content — or asking for it directly — reuses the stored job instead of queueing
+ *    duplicate provider work under different provenance.
+ */
+function migrateToVersionSeven(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS plan_executions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      plan_id TEXT NOT NULL,
+      plan_version_id TEXT NOT NULL,
+      execution_fingerprint TEXT NOT NULL,
+      rules_version TEXT NOT NULL,
+      mapping_scope TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('MATERIALIZED')) DEFAULT 'MATERIALIZED',
+      scene_count INTEGER NOT NULL CHECK (scene_count >= 0) DEFAULT 0,
+      scene_version_count INTEGER NOT NULL CHECK (scene_version_count >= 0) DEFAULT 0,
+      job_count INTEGER NOT NULL CHECK (job_count >= 0) DEFAULT 0,
+      reused_job_count INTEGER NOT NULL CHECK (reused_job_count >= 0) DEFAULT 0,
+      provider_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (plan_version_id, execution_fingerprint),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
+      FOREIGN KEY (plan_id) REFERENCES production_plans(id) ON DELETE RESTRICT,
+      FOREIGN KEY (plan_version_id) REFERENCES production_plan_versions(id) ON DELETE RESTRICT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_plan_executions_plan
+      ON plan_executions(plan_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_plan_executions_plan_version
+      ON plan_executions(plan_version_id, created_at, id);
+
+    /*
+     * Half-written materializations are worse than none: a row claiming four scenes and one job would make
+     * an idempotent retry look safe when it was not. The service writes the row inside the same transaction
+     * as the rows it counts — first, because scene versions reference it — from a read-only pre-pass over the
+     * planned units, and these triggers keep the counts truthful afterwards.
+     */
+    CREATE TRIGGER IF NOT EXISTS plan_executions_are_immutable
+      BEFORE UPDATE ON plan_executions
+      BEGIN
+        SELECT RAISE(ABORT, 'plan executions are immutable');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS plan_executions_cannot_be_deleted
+      BEFORE DELETE ON plan_executions
+      BEGIN
+        SELECT RAISE(ABORT, 'plan executions cannot be deleted; they anchor durable execution work');
+      END;
+  `);
+
+  addColumn(db, "scene_versions", "plan_execution_id TEXT REFERENCES plan_executions(id) ON DELETE RESTRICT");
+  addColumn(db, "scene_versions", "plan_version_id TEXT REFERENCES production_plan_versions(id) ON DELETE RESTRICT");
+  addColumn(db, "scene_versions", "scene_plan_id TEXT REFERENCES scene_plans(id) ON DELETE RESTRICT");
+  addColumn(db, "scene_versions", "generation_spec_id TEXT REFERENCES generation_specs(id) ON DELETE RESTRICT");
+  addColumn(db, "generation_jobs", "plan_execution_id TEXT REFERENCES plan_executions(id) ON DELETE RESTRICT");
+
+  db.exec(`
+    /*
+     * A plan link is meaningful only as a complete origin: "materialized by execution X" without the scene
+     * plan and spec it executed cannot be re-derived later, and it would let a row claim plan provenance it
+     * cannot prove. Enforced in the database, like the planning provenance rules in v5 and v6.
+     */
+    CREATE TRIGGER IF NOT EXISTS scene_versions_plan_link_must_be_complete
+      BEFORE INSERT ON scene_versions
+      WHEN (NEW.plan_execution_id IS NULL) <> (NEW.plan_version_id IS NULL)
+        OR (NEW.plan_execution_id IS NULL) <> (NEW.scene_plan_id IS NULL)
+        OR (NEW.plan_execution_id IS NULL) <> (NEW.generation_spec_id IS NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'scene version plan links must be recorded as a complete set');
+      END;
+
+    /*
+     * Jobs are mutable by design (status, attempts, error), so write-once has to be stated for the link
+     * alone — and it has to cover *adding* as well as changing: a caller that bypassed the repository must
+     * not be able to attach a plan to a job after the fact, which would make provenance look like evidence
+     * when it is an afterthought.
+     */
+    CREATE TRIGGER IF NOT EXISTS generation_jobs_plan_link_is_write_once
+      BEFORE UPDATE ON generation_jobs
+      WHEN NEW.plan_execution_id IS NOT OLD.plan_execution_id
+      BEGIN
+        SELECT RAISE(ABORT, 'a generation job''s plan execution link is recorded once and never rewritten');
+      END;
+
+    CREATE INDEX IF NOT EXISTS idx_scene_versions_plan_execution
+      ON scene_versions(plan_execution_id, scene_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_jobs_plan_execution
+      ON generation_jobs(plan_execution_id);
+  `);
 }
 
 /**

@@ -58,6 +58,12 @@ export const APPLICATION_ERROR_CODES = Object.freeze({
   PERSISTENCE_REJECTED: "PERSISTENCE_REJECTED",
   /** AI planning was requested, but this application has no AI planner adapter wired. */
   AI_PLANNER_NOT_CONFIGURED: "AI_PLANNER_NOT_CONFIGURED",
+  /** A plan version's own state blocks materialization (lifecycle, evidence, ordering, or scene conflict). */
+  EXECUTION_NOT_READY: "EXECUTION_NOT_READY",
+  /** No selected provider can satisfy a generation spec, so no work may be queued for it (Phase 5). */
+  EXECUTION_CAPABILITY_UNAVAILABLE: "EXECUTION_CAPABILITY_UNAVAILABLE",
+  /** Durable state disagreed with the materialization pre-pass; the whole run is rolled back. */
+  EXECUTION_STATE_INCONSISTENT: "EXECUTION_STATE_INCONSISTENT",
 } as const);
 
 export type ApplicationErrorCode = (typeof APPLICATION_ERROR_CODES)[keyof typeof APPLICATION_ERROR_CODES];

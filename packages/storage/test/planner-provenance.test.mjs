@@ -84,7 +84,7 @@ const PROVENANCE = Object.freeze({
 test("v5 exposes the nullable provenance columns and keeps them outside the content hash", async () => {
   const harness = await createRepository();
   try {
-    assert.equal(harness.jobs.getSchemaVersion(), 6);
+    assert.equal(harness.jobs.getSchemaVersion(), 7);
     const columns = harness.db
       .prepare("PRAGMA table_info(production_plan_versions)")
       .all()

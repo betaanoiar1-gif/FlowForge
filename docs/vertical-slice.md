@@ -135,3 +135,62 @@ These checks validate the local SQLite/filesystem/mock path only. Browser/CDP ru
 ## Phase 3 operator commands
 
 This document stays the engine-level contract for the flag-only invocation (`flowforge --data-dir … --review approve`), which is unchanged. The same durable path is now also operable command by command through the application services — `project create`, `scene create`, `scene version add`, `generate`, `queue status|run|recover`, `review list|approve|reject|select`, `production scene|ready|project` — with `--json` read models and exit codes documented in [docs/application-services.md](./application-services.md).
+
+## Phase 5 plan-materialization vertical slice
+
+Everything above stays exactly as Phase 1 delivered it: `corepack pnpm vertical-slice` still runs the flag-only
+engine slice (`--data-dir … --review approve`) and asserts the same reuse on a repeat run. Phase 5 adds a second
+slice *above* that engine — the same durable path, but entered from an approved plan instead of a hand-written
+scene — and it is deliberately a test rather than a demo script, because the claim worth proving is that the tail
+can be run twice without duplicating anything.
+
+**Automated:** `apps/cli/test/plan-vertical-slice.test.mjs` walks the whole chain with nothing but the CLI an
+operator would type, each command a separate process over one SQLite file:
+
+```text
+project create → brief create → definition character/world/dna-create
+  → planner run --providers mock --approve        (validate → approve → capability gate → EXECUTABLE)
+  → plan execute --dry-run                        (plans the units; writes nothing)
+  → plan execute                                  (ONE transaction: scene + scene version + job + queue item)
+  → queue run                                     (existing worker: claim → MockProvider → asset → deterministic QC)
+  → review approve → review select                (explicit operator decisions)
+  → production ready                              (derived readiness from that evidence)
+```
+
+The slice asserts: `EXECUTABLE` is reached and is *not* consumed by materializing; the materialization reports
+3 scenes / 3 scene versions / 3 jobs / 3 queue items with priorities `1000, 999, 998` in plan order; the worker
+succeeds with QC `PASSED` and one content-addressed asset version per unit, with PNG bytes present in the asset
+root; nothing self-approves (`approved: 0`, `selected: 0`) until `review approve`/`review select` run, after which
+`production ready` reports `productionReady: true` and `sceneStatus: READY`. Then it re-runs the tail — `plan execute`
+again, `queue run` again — and asserts `created: false`, the same `executionId` and `executionFingerprint`, the
+same job ids, **`attempted: 0`** on the second worker run, unchanged per-unit `[jobStatus, queueStatus,
+attemptCount, assetVersionId]`, one review decision, three scenes, three queue items, and three asset files. Its
+companion test proves the boundary from the other side: a plan that is only `VALIDATED` is refused with
+`EXECUTION_NOT_READY` / `PLAN_NOT_EXECUTABLE` (exit `3`) and leaves zero scenes, zero jobs, and zero queue items.
+
+**By hand**, against a scratch data directory, the same slice is these commands (identical output shape under
+`--json`; the human form names the next step at every stage):
+
+```sh
+CLI="node apps/cli/dist/index.js"
+$CLI project create --project-id pilot --name Pilot --data-dir /tmp/p5
+$CLI brief create --project-id pilot --title "Launch film" --concept "A launch teaser" \
+  --objective "Get signups" --audience "Indie developers" --tone confident \
+  --style "clean product film" --data-dir /tmp/p5
+$CLI definition dna-create --project-id pilot --visual-dna-id dna-grain --name grain \
+  --style "35mm film look" --palette-json '["#0b1020"]' --lighting "low key" \
+  --composition "centred thirds" --camera-language "slow dolly" --rendering-style photoreal \
+  --atmosphere tense --consistency-rules-json '["keep the horizon level"]' --data-dir /tmp/p5
+$CLI planner run --project-id pilot --visual-dna-id dna-grain --story-json '<story JSON>' \
+  --cast-json '[{"characterId":"…","role":"the developer"}]' --worlds-json '[{"worldId":"…"}]' \
+  --scenes 2 --duration-ms 8000 --providers mock --approve --data-dir /tmp/p5
+$CLI plan execute --plan-id <planId> --dry-run --data-dir /tmp/p5     # what would be written
+$CLI plan execute --plan-id <planId> --data-dir /tmp/p5               # durable queued work
+$CLI queue run --max-jobs 4 --data-dir /tmp/p5                        # existing worker does the executing
+$CLI plan execution --plan-id <planId> --data-dir /tmp/p5             # per-unit job/queue/attempt/asset/QC/review
+```
+
+Readiness gating, the execution fingerprint, atomicity, idempotency, recovery, and the full test map are
+[docs/plan-execution.md](./plan-execution.md). Like the Phase 1 slice, this validates the local
+SQLite/filesystem/MockProvider path only: no browser, no authenticated session, and no live Google Flow execution
+is involved, and Phase 5 adds no path that could reach one.

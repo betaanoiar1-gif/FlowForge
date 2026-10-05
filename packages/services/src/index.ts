@@ -185,6 +185,41 @@ export type {
   SetPlanStoryCommand,
   SetScenePlanCastCommand,
 } from "./commands.js";
+/* -------------------------------------------------------------------------- *
+ * Plan materialization (Phase 5). The pure identity/mapping/readiness helpers  *
+ * are exported as a namespace, like the 4B planner, so a caller can derive an    *
+ * execution fingerprint or assess readiness without a database; the service is    *
+ * the only thing that writes, and it writes through the existing services.        */
+export * as execution from "./execution/index.js";
+export { PlanExecutionService } from "./execution/plan-execution-service.js";
+export type {
+  ExecutionBlocker,
+  ExecutionNotice,
+  ExecutionUnitOutcome,
+  PlanExecutionRecord,
+  PlanExecutionStatus,
+} from "@flowforge/core";
+export type {
+  ExecutionStateDeps,
+} from "./execution/execution-recovery.js";
+export type {
+  ExecutionMapping,
+  ExecutionMappingOptions,
+  ExecutionUnit,
+} from "./execution/execution-mapping.js";
+export type {
+  ExecutionReadiness,
+  ExecutionReadinessContext,
+} from "./execution/execution-readiness.js";
+export type {
+  MaterializePlanCommand,
+  PlanExecutionCounts,
+  PlanExecutionReport,
+  PlanExecutionState,
+  PlanExecutionUnitState,
+  PlanExecutionVersionTarget,
+} from "./execution/execution-types.js";
+
 export type {
   ExecutionPreview,
   ExecutionPreviewItem,

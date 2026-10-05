@@ -27,6 +27,7 @@ import {
   type SceneStatus,
   type SceneVersionRecord,
 } from "@flowforge/core";
+import type { PlanExecutionRecord, PlanExecutionStatus } from "@flowforge/core";
 import { migrateDatabase } from "./migrations.js";
 import {
   createIdempotencyKey,
@@ -50,6 +51,26 @@ export class SqliteJobRepository {
 
   getSchemaVersion(): number {
     return Number(this.db.pragma("user_version", { simple: true }));
+  }
+
+  /**
+   * Runs `work` inside one `BEGIN IMMEDIATE` transaction. This is the workspace's only atomicity primitive
+   * for grouping *several* reviewed repository calls into one all-or-nothing unit, which is what Phase 5's
+   * plan materialization needs (a half-materialized execution graph is worse than none).
+   *
+   * Nesting is safe and deliberate: better-sqlite3 turns a repository transaction opened inside an open one
+   * into a savepoint, so every method `work` calls keeps its own consistency rules while its writes still
+   * belong to the outer transaction. If `work` throws, the outer transaction rolls back and nothing it did
+   * survives — a caught inner failure, by contrast, rolls back only that inner unit, which is why the
+   * materialization path lets errors escape instead of handling them per row.
+   *
+   * `work` may call repository methods and nothing else: no SQL, no statement handles, no second write
+   * surface. The callback runs synchronously, so it cannot await mid-transaction.
+   */
+  transaction<T>(work: () => T): T {
+    if (typeof work !== "function") throw new Error("transaction() requires a work callback.");
+    const wrapper = this.db.transaction(work);
+    return wrapper.immediate();
   }
 
   /**
@@ -157,6 +178,14 @@ export class SqliteJobRepository {
 
   createSceneVersion(input: CreateSceneVersionInput): SceneVersionRecord {
     if (!input.prompt.trim()) throw new Error("Scene version prompt is required.");
+    const planLink = input.planLink;
+    if (planLink) {
+      for (const [field, value] of Object.entries(planLink)) {
+        if (typeof value !== "string" || !value.trim()) {
+          throw new Error(`Scene version plan link field ${field} is required when a link is recorded.`);
+        }
+      }
+    }
     const prompt = input.prompt;
     const now = input.now ?? new Date().toISOString();
     const references = input.references ?? [];
@@ -173,7 +202,10 @@ export class SqliteJobRepository {
             existing.prompt === prompt &&
             stableJson(existing.references) === referencesJson &&
             stableJson(existing.metadata ?? {}) === stableJson(input.metadata ?? {}) &&
-            (input.parentVersionId === undefined || existing.parentVersionId === input.parentVersionId);
+            (input.parentVersionId === undefined || existing.parentVersionId === input.parentVersionId) &&
+            // Same prompt from a different plan unit is a different execution, so the origin is part of the
+            // equality test: a collision here must surface as a conflict rather than a silent reuse.
+            samePlanLink(existing, planLink);
           if (!same) throw new Error(`Scene version ID already exists with different content: ${input.id}`);
           return existing;
         }
@@ -195,9 +227,23 @@ export class SqliteJobRepository {
       this.db.prepare(`
         INSERT INTO scene_versions (
           id, scene_id, version_number, prompt, references_json,
-          metadata_json, parent_version_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, input.sceneId, versionNumber, prompt, referencesJson, metadataJson, parentVersionId, now);
+          metadata_json, parent_version_id, created_at,
+          plan_execution_id, plan_version_id, scene_plan_id, generation_spec_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        input.sceneId,
+        versionNumber,
+        prompt,
+        referencesJson,
+        metadataJson,
+        parentVersionId,
+        now,
+        planLink?.planExecutionId ?? null,
+        planLink?.planVersionId ?? null,
+        planLink?.scenePlanId ?? null,
+        planLink?.generationSpecId ?? null,
+      );
       this.setCurrentSceneVersionInTransaction(input.sceneId, id, now);
       return this.getSceneVersion(id)!;
     });
@@ -313,6 +359,12 @@ export class SqliteJobRepository {
         return { job: jobFromRow(existingRow), created: false };
       }
 
+      if (input.planExecutionId !== undefined) {
+        const execution = this.db
+          .prepare("SELECT id FROM plan_executions WHERE id = ?")
+          .get(input.planExecutionId) as { id: string } | undefined;
+        if (!execution) throw new Error(`Plan execution not found: ${input.planExecutionId}`);
+      }
       const id = input.id ?? randomUUID();
       const request: GenerationRequest = {
         projectId: input.projectId,
@@ -329,11 +381,11 @@ export class SqliteJobRepository {
           id, project_id, scene_id, scene_version_id, provider, prompt,
           references_json, parameters_json, metadata_json, idempotency_key,
           identity_json, status, attempt_count, max_attempts, external_id,
-          error, created_at, updated_at
+          error, plan_execution_id, created_at, updated_at
         ) VALUES (
           @id, @projectId, @sceneId, @sceneVersionId, @provider, @prompt,
           @references, @parameters, @metadata, @idempotencyKey,
-          @identity, 'QUEUED', 0, @maxAttempts, NULL, NULL, @createdAt, @updatedAt
+          @identity, 'QUEUED', 0, @maxAttempts, NULL, NULL, @planExecutionId, @createdAt, @updatedAt
         )
       `).run({
         id,
@@ -348,6 +400,7 @@ export class SqliteJobRepository {
         idempotencyKey,
         identity: identityJson,
         maxAttempts,
+        planExecutionId: input.planExecutionId ?? null,
         createdAt: now,
         updatedAt: now,
       });
@@ -389,6 +442,10 @@ export class SqliteJobRepository {
     if (filter.provider) {
       clauses.push("provider = ?");
       args.push(filter.provider);
+    }
+    if (filter.planExecutionId) {
+      clauses.push("plan_execution_id = ?");
+      args.push(filter.planExecutionId);
     }
     const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
@@ -1016,6 +1073,135 @@ export class SqliteJobRepository {
   }
 
   /** Legacy asset registration retained for callers of the initial storage API. */
+  /* ---------------------------------------------------------------------- *
+   * Plan materialization records (Phase 5).                                  *
+   *                                                                          *
+   * The durable evidence that a plan version was turned into execution work:  *
+   * one row per (plan version, execution fingerprint), so a repeat call      *
+   * lands on the same row instead of forking a second execution of one plan.  *
+   * The row is written by the materialization transaction after the rows it   *
+   * counts, and never amended — `plan_executions_are_immutable` is the rule.  *
+   * ---------------------------------------------------------------------- */
+
+  createPlanExecutionWithCreated(input: CreatePlanExecutionInput): {
+    execution: PlanExecutionRecord;
+    created: boolean;
+  } {
+    const planVersionId = requiredText(input.planVersionId, "Plan version ID");
+    const executionFingerprint = requiredText(input.executionFingerprint, "Execution fingerprint");
+    const rulesVersion = requiredText(input.rulesVersion, "Execution rules version");
+    const providerId = requiredText(input.providerId, "Provider ID");
+    const mappingScope = requiredText(input.mappingScope, "Mapping scope");
+    const counts = {
+      sceneCount: nonNegativeCount(input.sceneCount, "sceneCount"),
+      sceneVersionCount: nonNegativeCount(input.sceneVersionCount, "sceneVersionCount"),
+      jobCount: nonNegativeCount(input.jobCount, "jobCount"),
+    };
+    const now = input.now ?? new Date().toISOString();
+    const transaction = this.db.transaction(() => {
+      const existingRow = this.db.prepare(`
+        SELECT * FROM plan_executions WHERE plan_version_id = ? AND execution_fingerprint = ?
+      `).get(planVersionId, executionFingerprint) as PlanExecutionRow | undefined;
+      if (existingRow) {
+        // The fingerprint is a digest of the execution inputs, so everything derived from it must agree;
+        // disagreement means the caller is describing two different bodies of work with one identity, and
+        // no reuse is legitimate then. `reused_job_count` is excluded on purpose: it reports what *this*
+        // call found already present, which is expected to differ on a repeat run.
+        // Ownership is checked on the reuse path too, with the stored row as the authority: a caller that
+        // names the wrong project for a fingerprint it already wrote is describing a different plan, and
+        // silently returning the other project's row would be worse than refusing.
+        if (existingRow.project_id !== input.projectId) {
+          throw new Error("Plan execution project must match the plan version's project.");
+        }
+        if (existingRow.plan_id !== input.planId) {
+          throw new Error("Plan execution plan must match the plan version's plan.");
+        }
+        const conflicts = ([
+          ["rules_version", rulesVersion],
+          ["mapping_scope", mappingScope],
+          ["provider_id", providerId],
+          ["scene_count", counts.sceneCount],
+          ["scene_version_count", counts.sceneVersionCount],
+          ["job_count", counts.jobCount],
+        ] as const)
+          .filter(([column, value]) => existingRow[column] !== value)
+          .map(([column]) => column);
+        if (conflicts.length > 0) {
+          throw new Error(
+            `Plan execution fingerprint collision for ${planVersionId}: stored ${conflicts.join(", ")} differ.`,
+          );
+        }
+        return { execution: planExecutionFromRow(existingRow), created: false };
+      }
+      // `project_id` lives on the plan, not the version, so the ownership check joins one level up.
+      const version = this.db.prepare(`
+        SELECT v.plan_id AS plan_id, p.project_id AS project_id
+        FROM production_plan_versions v
+        JOIN production_plans p ON p.id = v.plan_id
+        WHERE v.id = ?
+      `).get(planVersionId) as { project_id: string; plan_id: string } | undefined;
+      if (!version) throw new Error(`Plan version not found: ${planVersionId}`);
+      if (version.project_id !== input.projectId) {
+        throw new Error("Plan execution project must match the plan version's project.");
+      }
+      if (version.plan_id !== input.planId) {
+        throw new Error("Plan execution plan must match the plan version's plan.");
+      }
+      const id = input.id ?? randomUUID();
+      this.db.prepare(`
+        INSERT INTO plan_executions (
+          id, project_id, plan_id, plan_version_id, execution_fingerprint, rules_version,
+          mapping_scope, status, scene_count, scene_version_count, job_count,
+          reused_job_count, provider_id, created_at
+        ) VALUES (
+          @id, @projectId, @planId, @planVersionId, @executionFingerprint, @rulesVersion,
+          @mappingScope, 'MATERIALIZED', @sceneCount, @sceneVersionCount, @jobCount,
+          @reusedJobCount, @providerId, @createdAt
+        )
+      `).run({
+        id,
+        projectId: input.projectId,
+        planId: input.planId,
+        planVersionId,
+        executionFingerprint,
+        rulesVersion,
+        mappingScope,
+        ...counts,
+        reusedJobCount: nonNegativeCount(input.reusedJobCount, "reusedJobCount"),
+        providerId,
+        createdAt: now,
+      });
+      return { execution: this.getPlanExecution(id)!, created: true };
+    });
+    return transaction.immediate();
+  }
+
+  getPlanExecution(id: string): PlanExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM plan_executions WHERE id = ?").get(id) as
+      | PlanExecutionRow
+      | undefined;
+    return row ? planExecutionFromRow(row) : null;
+  }
+
+  /** Every materialization of one plan version, oldest first: normally one, more means re-planning. */
+  listPlanExecutionsForVersion(planVersionId: string): PlanExecutionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM plan_executions WHERE plan_version_id = ? ORDER BY created_at, id
+    `).all(planVersionId) as PlanExecutionRow[];
+    return rows.map(planExecutionFromRow);
+  }
+
+  /** Scene versions this materialization created, in scene order then version order. */
+  listSceneVersionsByPlanExecution(planExecutionId: string): SceneVersionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT sv.* FROM scene_versions sv
+      JOIN scenes sc ON sc.id = sv.scene_id
+      WHERE sv.plan_execution_id = ?
+      ORDER BY sc.scene_number, sv.version_number, sv.id
+    `).all(planExecutionId) as SceneVersionRow[];
+    return rows.map(sceneVersionFromRow);
+  }
+
   registerAsset(input: RegisterAssetInput): AssetRecord {
     if (!this.getProject(input.projectId)) throw new Error(`Project not found: ${input.projectId}`);
     if (input.sceneId) {
@@ -1203,6 +1389,20 @@ export interface CreateSceneVersionInput {
   metadata?: Record<string, unknown>;
   parentVersionId?: string;
   now?: string;
+  /**
+   * Plan origin, recorded by Phase 5 materialization only. All four fields or none: the v7 trigger refuses a
+   * fragment, and `createSceneVersion` checks the same rule first so the caller gets a named error instead of
+   * a SQL-flavoured one.
+   */
+  planLink?: SceneVersionPlanLinkInput;
+}
+
+/** One side of the planning/execution bridge: which planned unit this version executes. */
+export interface SceneVersionPlanLinkInput {
+  planExecutionId: string;
+  planVersionId: string;
+  scenePlanId: string;
+  generationSpecId: string;
 }
 
 /**
@@ -1221,12 +1421,31 @@ export const UNSAFE_RETRY_ERROR_CLASSES: readonly string[] = Object.freeze([
 ]);
 
 /** Optional narrowing for the operator read models; omitted fields are not constrained. */
+export interface CreatePlanExecutionInput {
+  /** Supplied by Phase 5 so the row identity is derived from the fingerprint, never drawn. */
+  id?: string;
+  projectId: string;
+  planId: string;
+  planVersionId: string;
+  executionFingerprint: string;
+  rulesVersion: string;
+  mappingScope: string;
+  providerId: string;
+  sceneCount: number;
+  sceneVersionCount: number;
+  jobCount: number;
+  reusedJobCount: number;
+  now?: string;
+}
+
 export interface GenerationJobFilter {
   projectId?: string;
   sceneId?: string;
   sceneVersionId?: string;
   status?: JobStatus;
   provider?: string;
+  /** Phase 5: every job one materialization submitted (jobs it reused carry no new link, by design). */
+  planExecutionId?: string;
 }
 
 export interface QueueItemFilter {
@@ -1245,6 +1464,12 @@ export interface CreateGenerationJobInput {
   maxAttempts?: number;
   priority?: number;
   now?: string;
+  /**
+   * Which plan materialization submitted this job (Phase 5). Recorded on insert only, and never part of
+   * `identityJson`: the idempotency key answers "is this the same work?", and who asked is not part of the
+   * answer. A reused job therefore keeps the link it was created with — a reuse writes nothing.
+   */
+  planExecutionId?: string;
 }
 
 export interface CreateCharacterInput {
@@ -1386,6 +1611,27 @@ interface SceneVersionRow {
   metadata_json: string | null;
   parent_version_id: string | null;
   created_at: string;
+  plan_execution_id: string | null;
+  plan_version_id: string | null;
+  scene_plan_id: string | null;
+  generation_spec_id: string | null;
+}
+
+interface PlanExecutionRow {
+  id: string;
+  project_id: string;
+  plan_id: string;
+  plan_version_id: string;
+  execution_fingerprint: string;
+  rules_version: string;
+  mapping_scope: string;
+  status: string;
+  scene_count: number;
+  scene_version_count: number;
+  job_count: number;
+  reused_job_count: number;
+  provider_id: string;
+  created_at: string;
 }
 
 interface CharacterRow {
@@ -1422,6 +1668,7 @@ interface JobRow {
   max_attempts: number;
   external_id: string | null;
   error: string | null;
+  plan_execution_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1557,7 +1804,31 @@ function sceneVersionFromRow(row: SceneVersionRow): SceneVersionRecord {
     metadata: decodeOptionalJson(row.metadata_json),
     parentVersionId: row.parent_version_id ?? undefined,
     createdAt: row.created_at,
+    planExecutionId: row.plan_execution_id ?? undefined,
+    planVersionId: row.plan_version_id ?? undefined,
+    scenePlanId: row.scene_plan_id ?? undefined,
+    generationSpecId: row.generation_spec_id ?? undefined,
   };
+}
+
+function nonNegativeCount(value: number | undefined, label: string): number {
+  if (value === undefined) return 0;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative integer.`);
+  return value;
+}
+
+function samePlanLink(
+  existing: SceneVersionRecord,
+  requested: SceneVersionPlanLinkInput | undefined,
+): boolean {
+  if (!existing.planExecutionId && !requested) return true;
+  if (!existing.planExecutionId || !requested) return false;
+  return (
+    existing.planExecutionId === requested.planExecutionId &&
+    existing.planVersionId === requested.planVersionId &&
+    existing.scenePlanId === requested.scenePlanId &&
+    existing.generationSpecId === requested.generationSpecId
+  );
 }
 
 function characterFromRow(row: CharacterRow): CharacterRecord {
@@ -1596,8 +1867,28 @@ function jobFromRow(row: JobRow): GenerationJob {
     maxAttempts: row.max_attempts,
     externalId: row.external_id ?? undefined,
     error: row.error ?? undefined,
+    planExecutionId: row.plan_execution_id ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function planExecutionFromRow(row: PlanExecutionRow): PlanExecutionRecord {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    planId: row.plan_id,
+    planVersionId: row.plan_version_id,
+    executionFingerprint: row.execution_fingerprint,
+    rulesVersion: row.rules_version,
+    mappingScope: row.mapping_scope,
+    status: row.status as PlanExecutionStatus,
+    sceneCount: row.scene_count,
+    sceneVersionCount: row.scene_version_count,
+    jobCount: row.job_count,
+    reusedJobCount: row.reused_job_count,
+    providerId: row.provider_id,
+    createdAt: row.created_at,
   };
 }
 

@@ -52,6 +52,9 @@ const BLOCKING_CODES = new Set<string>([
   "PLAN_NOT_EXECUTABLE",
   "PLAN_NOT_EDITABLE",
   "PLAN_CAPABILITY_UNMET",
+  // Phase 5: a well-formed materialization request that durable state legitimately refuses.
+  "EXECUTION_NOT_READY",
+  "EXECUTION_CAPABILITY_UNAVAILABLE",
 ]);
 
 export async function runOperatorCommand(argv: readonly string[]): Promise<number> {

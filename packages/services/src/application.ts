@@ -16,6 +16,7 @@ import { ReviewService } from "./review-service.js";
 import { ProductionService } from "./production-service.js";
 import { PlannerService } from "./planner-service.js";
 import { AiPlannerService } from "./ai-planner-service.js";
+import { PlanExecutionService } from "./execution/plan-execution-service.js";
 import {
   CreativeBriefService,
   PlanningDefinitionService,
@@ -67,6 +68,12 @@ export interface FlowForgeApplication {
   /** The deterministic planner: authors plan versions from a brief through the planning services. */
   readonly planner: PlannerService;
   /**
+   * Plan materialization (Phase 5): the only path that turns an EXECUTABLE plan version into durable work.
+   * It reuses the Phase 3 services for every write and the durable queue/worker for everything after that, so
+   * it can create work and nothing else — no run, no retry, no approval, and no execution verb lives here.
+   */
+  readonly planExecution: PlanExecutionService;
+  /**
    * AI-assisted planning (Phase 4C). Propose-only: it builds the request, validates the answer, and hands
    * the result to `planner`, which stays the sole author of plan rows. Nothing here submits, enqueues,
    * or executes anything.
@@ -113,6 +120,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
   const plans = new ProductionPlanService(deps, planReads);
   const planValidation = new PlanningValidationService(deps, planReads);
   const planner = new PlannerService(deps, planReads, plans, planValidation);
+  const planExecution = new PlanExecutionService(deps, planReads, scenes, generation);
   const aiPlanning = new AiPlannerService(deps, planner);
   return {
     repository,
@@ -130,6 +138,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
     planReads,
     planner,
     aiPlanning,
+    planExecution,
   };
 }
 

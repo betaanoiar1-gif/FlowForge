@@ -4,7 +4,7 @@ FlowForge is an independent, provider-neutral creative-production system. Its pr
 
 ## Current status
 
-**Phases 1–3 are implemented, Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability — Phase 4B adds the deterministic planner engine that authors those plans, and Phase 4C adds an optional AI planner adapter that *proposes* input for that same engine. Phase 4A and 4B contain no model call at all. Phase 4C's adapter is propose-only: it may return a structured proposal, it writes nothing, and every field of the resulting plan is still decided by the deterministic rules and the Phase 4A validator. No agent loop, no autonomous submission, and no execution path exist anywhere in the planning route.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
+**Phases 1–3 are implemented, Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability — Phase 4B adds the deterministic planner engine that authors those plans, and Phase 4C adds an optional AI planner adapter that *proposes* input for that same engine. Phase 4A and 4B contain no model call at all. Phase 4C's adapter is propose-only: it may return a structured proposal, it writes nothing, and every field of the resulting plan is still decided by the deterministic rules and the Phase 4A validator. No agent loop and no autonomous submission exist anywhere in the planning route.** Phase 5 adds the one bridge from a plan to execution — `flowforge plan execute` *materializes* an `EXECUTABLE` version into durable scenes, scene versions, jobs, and queue items inside a single transaction, idempotently by a deterministic fingerprint — and then stops: the existing queue, worker, provider registry, QC, and review path do the executing, and a second call creates nothing.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
 
 ```text
 Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
@@ -14,14 +14,14 @@ Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
 
 The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design. Phase 4B's planner is a pure function over explicit input — 12 named, versioned rules, canonical normalization, derived identifiers, and write-once provenance per version — so the same brief and story always produce the same plan; it writes through the same planning services a human uses, and no command executes a plan. Phase 4C puts a model in front of that engine and nothing behind it: `flowforge planner ai-run` asks a provider-neutral `AIPlanner` port, refuses any answer that is not a schema-valid proposal, resolves the proposal's names against the project, plans it with the 4B rules, validates it with 4A, and records which adapter, model, and digests produced the version — in additive v6 columns kept outside the plan's content hash. A live model call is never required to build, test, or verify FlowForge.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/planner-engine.md](./docs/planner-engine.md) for the Phase 4B planner contracts, rules, normalization, and determinism guarantees, [docs/ai-planning.md](./docs/ai-planning.md) for the Phase 4C AI planning boundary, port, proposal schema, provenance, and security rules, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
+Executing a plan is documented in [docs/plan-execution.md](./docs/plan-execution.md) — the readiness gate, the execution fingerprint, the atomicity and idempotency contract, the v7 schema, and the recovery rules. See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/planner-engine.md](./docs/planner-engine.md) for the Phase 4B planner contracts, rules, normalization, and determinism guarantees, [docs/ai-planning.md](./docs/ai-planning.md) for the Phase 4C AI planning boundary, port, proposal schema, provenance, and security rules, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
 
 ## Workspace packages
 
 - `packages/core` — typed projects, immutable scene versions, generation/provider contracts, attempt/queue/asset/QC/review records, the planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding, planner trace step) with the plan-version lifecycle transition table, the canonical JSON/fingerprint helpers, and the planner/validator version constants.
-- `packages/storage` — SQLite v6 schema migrations (v4 planning tables with lifecycle/immutability triggers and content hashing, v5 planner-provenance columns, v6 AI-proposal provenance columns, both with complete-set and write-once enforcement), logical-generation idempotency, queue claims/leases, attempt history, assets, QC, reviews, explicit selection, and the planning tables.
+- `packages/storage` — SQLite v7 schema migrations (v4 planning tables with lifecycle/immutability triggers and content hashing, v5 planner-provenance columns, v6 AI-proposal provenance columns, both with complete-set and write-once enforcement, and v7's `plan_executions` anchor table with the complete-set scene-version plan links and the write-once job link), logical-generation idempotency, queue claims/leases, attempt history, assets, QC, reviews, explicit selection, and the planning tables.
 - `packages/queue` — provider-neutral durable worker with recovery-before-submit, lease renewal, retry classification, artifact persistence, and finalization.
-- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models; plus the planning services (briefs, definitions, plans, deterministic validation, capability gating, plan read models, read-only execution preview) and the Phase 4B deterministic planner (`packages/services/src/planner/`), its service seam, and the read-only plan→execution mapping. Owns no queue, storage, retry, provider, browser, or asset-byte logic.
+- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models; plus the planning services (briefs, definitions, plans, deterministic validation, capability gating, plan read models, read-only execution preview) and the Phase 4B deterministic planner (`packages/services/src/planner/`), its service seam, and the read-only plan→execution mapping; plus the Phase 5 execution layer (`packages/services/src/execution/`) that materializes an `EXECUTABLE` version into durable queued work atomically and idempotently. Owns no queue, storage, retry, provider, browser, or asset-byte logic — Phase 5 reaches those only by calling the services that own them.
 - `packages/assets` — atomic local filesystem storage for bytes and streaming SHA-256 integrity checks; bytes do not go in SQLite.
 - `packages/qc` — deterministic file, readability, MIME, size, checksum, and supported image-dimension checks. No semantic success is fabricated.
 - `providers/mock` — file-backed deterministic success, transient failure, permanent failure, timeout, and duplicate-result modes. Used by the local demo and ordinary reliability tests.
@@ -29,7 +29,7 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLE
 - `providers/openai-chat` — the Phase 4C AI planning adapter: implements the domain's `AIPlanner` port against an OpenAI-compatible chat endpoint with structured JSON-schema output, byte and timeout caps, credential redaction, and no write, queue, browser, or execution capability of any kind.
 - `packages/browser` — provider-neutral Playwright/CDP gateway with fake-transport tests, explicit tab selection, guarded input, observation, and visible upload/download actions.
 - `apps/browser-gateway` — sanitized local CDP diagnostics, not a server or worker.
-- `apps/cli` — operator subcommands over the services (project, scene, generate, queue, review, production, provider, brief, definition, plan) plus the Phase 1 MockProvider demo command.
+- `apps/cli` — operator subcommands over the services (project, scene, generate, queue, review, production, provider, brief, definition, plan, plan execute/execution/executions) plus the Phase 1 MockProvider demo command. No CLI command runs a provider: `plan execute` enqueues, `queue run` executes.
 
 ## Quick start
 
@@ -115,7 +115,8 @@ is unchanged, an edit makes the evidence stale (`VALIDATION_STALE`) until you va
 approved version is frozen — `plan revise` copies it into a new draft instead of editing it. Marking a plan
 executable requires passing validation, an explicit approval, and a configured provider that declares every
 capability each spec needs; an unsatisfiable requirement fails with `PLAN_CAPABILITY_UNMET` and the offending
-spec ids. Nothing in this flow creates a scene, a job, or a queue entry — `flowforge help` (or
+spec ids. Nothing in this flow creates a scene, a job, or a queue entry — that step exists, is called
+`plan execute`, and is described below — `flowforge help` (or
 `flowforge plan validate --help` for one command) and
 [docs/planning-domain.md](./docs/planning-domain.md) document the whole surface, including the exit codes.
 
@@ -191,6 +192,40 @@ $CLI plan inspect --plan-id <planId>     # planner view, plus which adapter and 
 The port, proposal schema, provenance columns, security rules, and test map are in
 [docs/ai-planning.md](./docs/ai-planning.md).
 
+## Executing a plan (Phase 5)
+
+Once a version is `EXECUTABLE`, one command turns it into durable work. It is deliberately the only such command,
+and it performs no generation:
+
+```sh
+$CLI plan execute --plan-id plan-1 --dry-run       # what would be written: units, priority, deps, counts, blockers
+$CLI plan execute --plan-id plan-1                 # one transaction: scenes, scene versions, jobs, queue items
+$CLI queue run --max-jobs 10                       # the existing worker claims, calls MockProvider, stores, runs QC
+$CLI plan execution --plan-id plan-1               # per unit: job, queue, attempts, asset, QC, review — read-only
+$CLI review approve --asset-version-id <id> --reviewer <name>
+$CLI review select --scene-id <id> --asset-version-id <id>
+```
+
+- **Readiness before writes.** The plan must exist, belong to the project, be the current non-archived version,
+  be `EXECUTABLE`, carry current validation evidence for its exact content hash, and have every spec's capability
+  requirement satisfiable by a provider that is *actually registered now*. Anything unmet raises
+  `EXECUTION_NOT_READY` — or `EXECUTION_CAPABILITY_UNAVAILABLE` when the block is a capability miss — with the
+  whole ordered blocker list, and nothing at all is written. A blocked `--dry-run` exits `3` without throwing.
+- **Atomic.** Scenes, scene versions, jobs, and queue items are written in one `BEGIN IMMEDIATE` unit, so a
+  failure partway through leaves no partial graph — the next call is a clean run, not a repair.
+- **Idempotent by identity.** An execution fingerprint over the canonical inputs (project, plan version, scene
+  plan, spec, capability requirements, rules version, normalized provider selection) derives every id, so
+  materializing twice returns the same scene versions, jobs, and single queue items — from the same process or a
+  later one. Timestamps, leases, attempt counts, retry budgets, and provider responses are excluded, so a retry
+  never looks like new work. Widening `--providers` beyond the approved set is refused, not accepted.
+- **Execution stays where it was.** Claiming, leases, expiry recovery, retry classification, ACK, asset writes,
+  QC, and review are unchanged Phase 1/Phase 3 machinery; retries add attempts to the same job, an expired lease
+  resumes the same attempt, and an ambiguous submission fails closed instead of producing a second job. Review
+  stays the only path from a `PASSED` output to `APPROVED` and selection.
+- **Provenance without secrets.** `plan_executions` plus the link columns on `scene_versions` and
+  `generation_jobs` record which materialization produced which row; no credential, endpoint, prompt body, or
+  provider response is stored anywhere on the execution path.
+
 ## Browser diagnostics and live Flow smoke
 
 The safe prompt-only diagnostic does not click Generate, but it requires a deliberately prepared, manually authenticated Flow page with an empty prompt editor:
@@ -226,4 +261,7 @@ The exact Node-header path is machine-specific. In the Phase 1 sandbox the local
 
 ## Safety boundary
 
-Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, agent system, publishing, analytics, or full video pipeline in this phase; Phase 4C's AI planner is an adapter that returns a proposal and nothing else — it holds no repository, queue, browser, or credential beyond the one request header it is configured to send, and it cannot execute, submit, or persist by itself; the operator surface is the CLI over the application services. Phases 4A and 4B add the planning *domain* and a *deterministic* planner: no model call, no provider-implementation change, and no plan that can execute without the explicit Phase 3 commands above — 4B's planner refuses rather than guessing, and ships no execution command. Phase 4C's model access is bounded by the same rule: the domain wins over any AI answer, a proposal that cannot be validated ends the run with nothing written, credentials are read from the environment by variable name and never persisted or printed, and no planning command — deterministic or AI-proposed — submits work.
+Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, agent system, publishing, analytics, or full video pipeline in this phase; Phase 4C's AI planner is an adapter that returns a proposal and nothing else — it holds no repository, queue, browser, or credential beyond the one request header it is configured to send, and it cannot execute, submit, or persist by itself; the operator surface is the CLI over the application services. Phases 4A and 4B add the planning *domain* and a *deterministic* planner: no model call, no provider-implementation change, and no plan that can execute without the explicit Phase 3 commands above — 4B's planner refuses rather than guessing, and ships no execution command. Phase 4C's model access is bounded by the same rule: the domain wins over any AI answer, a proposal that cannot be validated ends the run with nothing written, credentials are read from the environment by variable name and never persisted or printed, and no planning command — deterministic or AI-proposed — submits work. Phase 5's `plan execute` is the one
+explicit step that turns an approved, executable plan into durable queued work, and it stops there: it owns no
+provider session, no queue, no lease, no retry policy, and no asset byte, and live Google Flow remains
+**BLOCKED / NOT RUN** — the deterministic MockProvider is the provider this phase verifies against.

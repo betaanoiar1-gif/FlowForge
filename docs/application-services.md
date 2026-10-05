@@ -204,7 +204,8 @@ gains an optional `planning` dependency, so every existing caller in this docume
 before, and planning access without it fails with `PLANNING_NOT_CONFIGURED` instead of a `TypeError`.
 
 Planning is a layer *above* this one: no service here changed its queue, worker, retry, capability, or
-review behaviour, and the planning services own no execution path. The model, lifecycle, validation
+review behaviour, and the 4A planning services own no execution path — the one service allowed to cross that line
+(Phase 5's `PlanExecutionService`) does so only by calling the services documented here. The model, lifecycle, validation
 rules, persistence shape, idempotency keys, CLI, and verified walkthrough live in
 [docs/planning-domain.md](./planning-domain.md).
 
@@ -236,3 +237,23 @@ Verification for the whole planning line (4A + 4B + 4C) on this checkout: `corep
 total), and
 `corepack pnpm vertical-slice` passing unchanged. Live Google Flow execution remains **NOT RUN**, and no
 planning, adapter, or CLI test requires a model credential, an account, or a browser.
+
+## 13. Phase 5 continuation — plan materialization
+
+Phase 5 adds `PlanExecutionService` (`packages/services/src/execution/`) and three operator commands. It changes
+no ownership rule in this document: materialization reaches `Scene`, `SceneVersion`, `GenerationJob`, and the queue
+exclusively through `SceneService`, `GenerationService`, and their repositories, inside one
+`repository.transaction()` unit, and it owns no claim, lease, attempt, retry decision, provider call, asset byte,
+or review outcome. The durable additions are one `plan_executions` table and five nullable link columns (v7,
+additive), so every pre-Phase-5 caller in this document behaves exactly as before.
+
+```bash
+flowforge plan execute --plan-id PLAN [--version N] [--providers CSV] [--max-attempts N] [--dry-run]
+flowforge plan execution --plan-id PLAN [--version N] [--execution-id ID]   # read-only state of one materialization
+flowforge plan executions --plan-id PLAN [--version N]                       # every materialization of a version
+```
+
+`plan execute` prints what it wrote and then names `flowforge queue run` as the next step — it never runs the work
+it enqueued. Exit codes follow the conventions in §7: `0` success, `1` error, `2` usage, `3` when durable state
+legitimately blocks the command (including a blocked `--dry-run`). The readiness gate, the execution fingerprint,
+the idempotency and recovery contract, and the test map are [docs/plan-execution.md](./plan-execution.md).

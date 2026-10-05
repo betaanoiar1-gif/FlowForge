@@ -64,6 +64,11 @@ export class GenerationService {
           fallback: this.deps.defaultMaxAttempts,
         }),
         priority: integerRange(input.priority, "priority", { min: -1000, max: 1000, fallback: 0 }),
+        // Provenance only: which plan materialization submitted this job. Deliberately outside the identity
+        // the idempotency key is computed from, so identical content stays one job whoever asked for it.
+        ...(input.planExecutionId === undefined
+          ? {}
+          : { planExecutionId: identifier(input.planExecutionId, "planExecutionId") }),
         now,
       });
     } catch (error) {

@@ -268,9 +268,12 @@ nothing at all, including provenance.
   unboundReferenceCount }`, and it **emits intents only** — no `GenerationService` call, no queue write, no
   job row.
 
-**Phase 4B ships no CLI command that executes a plan.** The mapping exists at service level and is proven by
-deterministic tests; wiring it to a submit call is a later phase's decision. `flowforge plan preview` stays the
-read-only view of what would be submitted.
+**Phase 4B ships no CLI command that executes a plan.** The mapping existed at service level and was proven by
+deterministic tests; wiring it to a submit call was a later phase's decision, and `flowforge plan preview` remains
+the read-only view of what would be submitted. Phase 5 took that decision: `flowforge plan execute` calls
+`mapPlanToJobs` through `PlanExecutionService` and materializes the result inside one transaction, while every
+`planner …` command still executes nothing — the CLI tests assert that `planner execute`, `planner ai-execute`,
+and an `--execute` flag do not exist. See [plan-execution.md](./plan-execution.md).
 
 ## 10. CLI reference
 

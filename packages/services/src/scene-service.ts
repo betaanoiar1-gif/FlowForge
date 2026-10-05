@@ -70,6 +70,8 @@ export class SceneService {
       references: referenceList(input.references),
       metadata: metadataRecord(input.metadata, "metadata"),
       parentVersionId: optionalIdentifier(input.parentVersionId, "parentVersionId"),
+      // Recorded by Phase 5 materialization only; the repository requires a complete tuple or none.
+      ...(input.planLink ? { planLink: input.planLink } : {}),
       now,
     });
   }

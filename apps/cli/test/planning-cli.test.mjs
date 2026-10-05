@@ -491,10 +491,29 @@ test("the execution preview is read-only guidance toward the Phase 3 commands", 
     assert.match(human.stdout, /then generate --output-count 1 --aspect-ratio 16:9/);
     assert.match(human.stdout, /Preview only/);
 
-    // There is no planning command that executes: Phase 4A stops at the mapping.
-    const execute = workspace.run(["plan", "execute", "--plan-id", ids.planId]);
-    assert.equal(execute.code, 2);
-    assert.match(execute.stderr, /Unknown command/);
+    // Phase 4A exposed no execution command at all. Phase 5 sanctioned exactly one verb — `plan execute` —
+    // and the invariant this test existed to protect still holds: *reading* the plan creates nothing, and the
+    // one verb that does write only enqueues durable work for the existing worker instead of executing it.
+    const previewAgain = workspace.json(["plan", "preview", "--plan-id", ids.planId]);
+    assert.equal(previewAgain.code, 0, previewAgain.stderr);
+    assert.match(previewAgain.data().note, /does not create scenes, jobs, or queue entries/);
+    assert.equal(workspace.json(["scene", "list", "--project-id", "pilot"]).data().length, 0);
+    assert.equal(workspace.json(["queue", "status"]).data().depth.total, 0);
+
+    const execute = workspace.json(["plan", "execute", "--plan-id", ids.planId]);
+    assert.equal(execute.code, 0, execute.stderr);
+    assert.equal(execute.data().dryRun, false);
+    assert.equal(execute.data().units.length, previewAgain.data().items.length);
+    assert.equal(
+      workspace.json(["queue", "status"]).data().depth.queued,
+      previewAgain.data().items.length,
+      "the preview's items became exactly that many queued jobs",
+    );
+    assert.equal(
+      workspace.json(["plan", "status", "--plan-id", ids.planId]).data().version.status,
+      "EXECUTABLE",
+      "materializing a plan does not consume it",
+    );
   } finally {
     await workspace.close();
   }
@@ -575,8 +594,11 @@ test("help lists the planning commands, and planning state is durable across CLI
     assert.match(help.stdout, /brief create --project-id ID --title TITLE/);
     assert.match(help.stdout, /definition world-create --project-id ID --name NAME/);
     assert.match(help.stdout, /plan preview --plan-id ID \[--version N\]/);
-    // The planning surface must not advertise an execution command.
-    assert.ok(!/plan execute/.test(help.stdout), "Phase 4A exposes no execution command");
+    // Phase 5 added one materialization verb and nothing else: the planning surface still advertises no
+    // command that talks to a provider or a browser directly.
+    assert.match(help.stdout, /plan execute --plan-id ID/);
+    assert.ok(!/plan (submit|generate|render|publish|cancel)/.test(help.stdout), "no direct provider execution verb");
+    assert.ok(!/flow (submit|generate|scrape)/.test(help.stdout), "no Google Flow automation verb");
 
     const commandHelp = workspace.run(["plan", "validate", "--help"], { raw: true });
     assert.equal(commandHelp.code, 0, commandHelp.stderr);

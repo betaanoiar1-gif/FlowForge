@@ -172,6 +172,72 @@ and 7 CLI tests), and `corepack pnpm vertical-slice` passing unchanged. Every te
 browser, or a network beyond localhost. Live Google Flow behavior remains **BLOCKED / NOT RUN**; the live model
 smoke is documented and optional, never a gate.
 
+## Phase 5 — Plan → executable work → durable execution
+
+Phase 5 closes the gap the 4B and 4C follow-on rows named: an `EXECUTABLE` plan version becomes durable execution
+work. It is **one service and one transaction, on top of the engine that already exists** — `PlanExecutionService`
+maps the version to units through Phase 4B's `mapPlanToJobs`, writes the whole graph (or nothing) inside one
+`BEGIN IMMEDIATE` unit, and hands the work to the existing queue, worker, provider registry, MockProvider, QC, and
+review path. There is no second execution engine, no new queue, no new worker, no new retry policy, and no new
+plan-version status. `docs/plan-execution.md` is the contract: the readiness gate and every blocker code, the
+execution fingerprint and what it excludes, the scene boundary, the idempotency and recovery rules, the v7 schema,
+and the test map.
+
+### Phase 5 acceptance criteria
+
+1. **Explicit path only.** `ProductionPlanVersion → readiness check → mapPlanToJobs → materialization`. No hidden
+   flag bypasses the lifecycle: a version that is not `EXECUTABLE` cannot be materialized, and `plan preview`,
+   `plan status`, `planner run`, and `planner ai-run` still create no scenes, jobs, or queue entries.
+2. **The gate writes nothing.** Plan existence, project ownership, version-not-archived, `EXECUTABLE`, current
+   validation evidence on the same content hash, provenance intact if present, capability support, and per-scene
+   soundness (unique order, spec present, valid references, valid duration, satisfiable capabilities) are all
+   assessed before the first write. Any failure is `EXECUTION_NOT_READY` — or `EXECUTION_CAPABILITY_UNAVAILABLE`
+   when the block is capability-attributable — with the full ordered blocker list in details and zero graph rows.
+3. **One transaction.** The materialization is atomic: an injected failure partway through leaves no scene, no
+   scene version, no job, no queue item, and no execution row, and the next call is a clean run rather than a
+   repair.
+4. **Idempotent by identity, not by luck.** `materialize` twice returns the same `executionId`, the same
+   fingerprint, the same scene versions and jobs, and one queue item per unit. Reuse is *matched* (prompt,
+   references, link, provider, stable parameters) and a fingerprint that describes different work is refused.
+   `plan_executions` is immutable: counts are the creating call's, and a reuse does not restamp or amend them.
+5. **Fingerprint over canonical inputs only.** Project, plan version, scene plan, spec, capability requirements,
+   rules version, normalized provider selection. Timestamps, random ids, leases, worker runs, attempt counts,
+   retry budgets, and transient provider responses are excluded, so a retry never looks like new work.
+6. **Scene boundary respected.** A `ScenePlan` never becomes a `Scene` implicitly; the explicit step happens only
+   at materialization, and every scene version records the complete four-column link (execution, plan version,
+   scene plan, generation spec) enforced by a trigger. Scene versions stay immutable, and a later plan version
+   produces new rows without rewriting the first run's history.
+7. **One job per execution identity, through the existing service.** `GenerationService`/repository remain the
+   only writers of `GenerationJob` rows and queue items; `planExecutionId` is additive provenance kept outside the
+   job's idempotency identity, recorded once and never amended (write-once both directions). No secret,
+   credential, endpoint, or prompt body is stored on any execution row.
+8. **Smallest dependency contract.** Execution order is the plan's own scene order: priority descends by unit
+   index and each unit depends only on the scene plan before it. No graph is built that the plan did not declare.
+9. **Queue and worker untouched.** Durable persistence, leases, visibility timeout, ACK, recovery, retry
+   classification, and idempotency are the Phase 1 machinery, unmodified: a claim never deletes work, an expired
+   lease resumes the *same* attempt, retries add attempts to the same job, and an ambiguous external execution
+   stays `FAIL_CLOSED` instead of producing a second job.
+10. **Capabilities gate before enqueue.** Selection goes through `ProviderRegistry` and the spec's declared
+    capabilities, re-checked at materialization because registrations drift. A provider that cannot serve a spec
+    yields `EXECUTION_CAPABILITY_UNAVAILABLE` with no burned queue item, no retry loop, and no silent or
+    autonomous fallback. MockProvider is the Phase 5 provider.
+11. **Assets, QC, and review stay Phase 3.** Artifact identity and idempotency unchanged; no new asset storage;
+    deterministic QC unchanged (including its intentional submit-time and attempt-end passes); a QC failure uses
+    existing status/retry semantics; `ReviewService` stays the only `PASSED → APPROVED` and selection path, so a
+    materialization report ends with an operator command rather than a claim of approval.
+12. **Thin surface, honestly narrowed.** Three read/write verbs — `plan execute` (with `--dry-run`),
+    `plan execution`, `plan executions` — delegating to the service, and nothing else. The 4B/4C test that asserted
+    `plan execute` did not exist is narrowed rather than deleted: planning and planner commands still execute
+    nothing, `plan preview` still creates nothing, and the surviving half of that invariant is asserted in the
+    same test.
+
+**Gate:** build and typecheck clean across the workspace; `corepack pnpm -r --if-present test` **245/245** across 9
+suites — core 13, browser 10, qc 4, openai-chat 14, google-flow 22, storage 39 (30 + 9 new), services 101 (82 + 19
+new, the A–J matrix), cli 35 (25 + 8 verb tests + 2 vertical-slice tests) — with every earlier test still passing
+unchanged except the two narrowing edits described in criterion 12; and `corepack pnpm vertical-slice` passing
+unchanged. No test needs a credential, a browser, or a network beyond localhost. **Live Google Flow remains
+BLOCKED / NOT RUN**, and Phase 5 adds no path that could reach it.
+
 ## Remaining milestones
 
 | Phase | Scope | Exit gate |
@@ -182,9 +248,9 @@ smoke is documented and optional, never a gate.
 | **3 — Application services and operator UX** | Narrow use-case services (`packages/services`) over the proven repository boundaries plus an operator CLI for project/scene/generation/queue/review/production commands and read models. | **Complete.** Commands use persisted IDs and cannot mutate storage directly; review/selection stay explicit; readiness is derived; no UI/HTTP API/daemon. See [docs/application-services.md](./docs/application-services.md). |
 | **4A — Creative planning domain** | Structured brief, versioned production plan, story, character/world profiles, Visual DNA, scene plans, generation specifications, deterministic validation, capability gating, execution preview, persistence, CLI, and operator read models. **No planner and no AI adapter.** | **Complete.** Build/typecheck/test/vertical-slice pass (115 tests); the lifecycle walkthrough is deterministic, plan content is validated and approved before it can be marked executable, and planning provably creates no jobs or queue entries. See [docs/planning-domain.md](./docs/planning-domain.md). |
 | **4B — Planner engine** | Deterministic authoring over the 4A contracts: `PlannerInput → PlannerRun` with a 12-rule versioned registry, canonical normalization, input/output fingerprints, plan identity, and authoring through the existing planning services only. Execution mapping exists as a **read-only intent emitter** at service level. | **Complete.** Build/typecheck/test/vertical-slice pass (165 tests); repeat runs are byte-identical; an unchanged re-run writes nothing; provenance is recorded per version and write-once; no job, queue entry, provider call, or UI is created, and no CLI command executes a plan. See [docs/planner-engine.md](./docs/planner-engine.md). |
-| **4B-follow-on — Planned execution** | Submitting `mapPlanToJobs` intents through the Phase 3 services (`CreateGenerationJobCommand`), plus scene-level regeneration of planned outputs and their attempt/QC lineage. | **Not started.** Deliberately out of 4B: the mapping and its deterministic ids are built and proven by tests, while the submit call stays an explicit later decision rather than a side effect of planning. |
+| **4B-follow-on — Planned execution** | Submitting `mapPlanToJobs` intents through the Phase 3 services (`CreateGenerationJobCommand`), plus scene-level regeneration of planned outputs and their attempt/QC lineage. | **Complete, delivered as [Phase 5](#phase-5--plan--executable-work--durable-execution) above** — deliberately not part of 4B: the mapping and its deterministic ids were proven by tests first, and the submit call stayed an explicit later decision. Materialization is atomic and idempotent; scene-level regeneration reuses the existing job/attempt/QC lineage. See [docs/plan-execution.md](./docs/plan-execution.md). |
 | **4C — AI planner adapter** | Provider-neutral `AIPlanner` port plus the shipped `providers/openai-chat` adapter: brief and definitions in, a schema-validated `PlanningProposal` out, normalized into `PlannerInput` and authored by the Phase 4B engine through the Phase 4A services, with write-once AI provenance, dry run, explicit fallback, and one CLI verb. | **Complete.** Build/typecheck/test/vertical-slice pass (207 tests, none needing a credential); invalid or contradictory output fails closed with nothing written; AI metadata stays outside plan content; provenance names adapter, model, schema version, and digests without storing a prompt, a response, or a secret; no adapter path touches storage, the queue, a provider, or a browser, and no command executes a plan. See [docs/ai-planning.md](./docs/ai-planning.md). |
-| **4C-follow-on — Planned execution** | Turning an approved, executable plan into submitted Phase 3 work — the same gate the 4B-follow-on row describes, now reachable from either planning route. | **Not started.** Deliberately outside 4C: AI planning ends at a validated version, and submission stays an explicit operator action. |
+| **4C-follow-on — Planned execution** | Turning an approved, executable plan into submitted Phase 3 work — the same gate the 4B-follow-on row describes, now reachable from either planning route. | **Complete, delivered as Phase 5 above.** Both planning routes reach it the same way, because the gate is the plan version's lifecycle state, not the route that authored it: an AI-proposed version carries an `AI_PROPOSED_PLAN` notice and is otherwise materialized, executed, and reviewed by the identical code path. |
 | **5 — Rich review and QC** | Add richer review categories/feedback and optional deterministic media probes or validated semantic checks. Keep unsupported metrics `NOT_EVALUATED`. | Evidence links to persisted records; no semantic score without a validated evaluator and reviewable evidence. |
 | **6 — Media pipeline** | Add isolated audio/narration/music/caption/timeline/render/export jobs. Preserve source asset/version provenance and support requested output formats. | Reproducible render fixture and format-specific QC trace to source scene versions, generations, assets, and reviews. |
 | **7 — Agent system** | Add specialist agents over typed, authorized domain tools and explicit workflow tasks. | Schema validation, tool authorization, audit logs, and policy tests; agents cannot write arbitrary DB rows. |
