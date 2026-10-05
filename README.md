@@ -4,7 +4,7 @@ FlowForge is an independent, provider-neutral creative-production system. Its pr
 
 ## Current status
 
-**Phases 1–3 are implemented, and Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability. It is a domain foundation, not an AI planner: no LLM, no agent, and no autonomous submission exists in this phase.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
+**Phases 1–3 are implemented, Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability — and Phase 4B adds the deterministic planner engine that authors those plans. Neither phase is an AI planner: no LLM, no agent, no provider call, and no autonomous submission exist anywhere in the planning path.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
 
 ```text
 Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
@@ -12,16 +12,16 @@ Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
         → explicit Review → explicit selected version
 ```
 
-The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design.
+The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design. Phase 4B's planner is a pure function over explicit input — 12 named, versioned rules, canonical normalization, derived identifiers, and write-once provenance per version — so the same brief and story always produce the same plan; it writes through the same planning services a human uses, and no command executes a plan.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/planner-engine.md](./docs/planner-engine.md) for the Phase 4B planner contracts, rules, normalization, and determinism guarantees, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
 
 ## Workspace packages
 
-- `packages/core` — typed projects, immutable scene versions, generation/provider contracts, attempt/queue/asset/QC/review records, and the planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding) with the plan-version lifecycle transition table.
+- `packages/core` — typed projects, immutable scene versions, generation/provider contracts, attempt/queue/asset/QC/review records, the planning contracts (brief, plan version, story, cast, world, Visual DNA, scene plan, generation spec, validation finding, planner trace step) with the plan-version lifecycle transition table, the canonical JSON/fingerprint helpers, and the planner/validator version constants.
 - `packages/storage` — SQLite v4 schema migrations, logical-generation idempotency, queue claims/leases, attempt history, assets, QC, reviews, explicit selection, and the planning tables with lifecycle/immutability triggers and content hashing.
 - `packages/queue` — provider-neutral durable worker with recovery-before-submit, lease renewal, retry classification, artifact persistence, and finalization.
-- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models; plus the planning services (briefs, definitions, plans, deterministic validation, capability gating, plan read models, read-only execution preview). Owns no queue, storage, retry, provider, browser, or asset-byte logic.
+- `packages/services` — application layer: request validation and capability admission, idempotent job creation, on-demand worker execution, review/selection commands, derived production readiness, and operator read models; plus the planning services (briefs, definitions, plans, deterministic validation, capability gating, plan read models, read-only execution preview) and the Phase 4B deterministic planner (`packages/services/src/planner/`), its service seam, and the read-only plan→execution mapping. Owns no queue, storage, retry, provider, browser, or asset-byte logic.
 - `packages/assets` — atomic local filesystem storage for bytes and streaming SHA-256 integrity checks; bytes do not go in SQLite.
 - `packages/qc` — deterministic file, readability, MIME, size, checksum, and supported image-dimension checks. No semantic success is fabricated.
 - `providers/mock` — file-backed deterministic success, transient failure, permanent failure, timeout, and duplicate-result modes. Used by the local demo and ordinary reliability tests.
@@ -118,6 +118,44 @@ spec ids. Nothing in this flow creates a scene, a job, or a queue entry — `flo
 `flowforge plan validate --help` for one command) and
 [docs/planning-domain.md](./docs/planning-domain.md) document the whole surface, including the exit codes.
 
+## Letting the planner author the plan (Phase 4B)
+
+The same aggregate can be authored deterministically instead of scene by scene. `planner run` plans from the
+project's current brief plus the story, cast, and world claims you pass, and writes only through the planning
+services above:
+
+```sh
+$CLI planner rules                        # the 12 rules, their order, versions, and defaults
+
+$CLI planner run --project-id pilot --dry-run \
+  --story-json '{"premise":"A courier carries one package across the rooftops",
+                 "beginning":"She reaches the grid at dawn.",
+                 "development":"The chase crosses three rooftops and the watch slips.",
+                 "ending":"She delivers it and walks out of frame."}' \
+  --cast-json '[{"characterId":"<characterId>","role":"the courier"}]' \
+  --worlds-json '[{"worldId":"<worldId>"}]' \
+  --options-json '{"totalDurationMs":20000,"developmentScenes":3}'
+
+# drop --dry-run to author the plan; --approve validates, approves, and (with --providers) marks it EXECUTABLE
+$CLI planner run --project-id pilot --story-json '<same JSON>' --approve --reviewer <name> --providers mock
+
+$CLI plan inspect --plan-id <planId>      # planner view: version, rules, seed, unchanged-since-planning
+```
+
+- A dry run writes nothing and reports the fingerprints the real run would record.
+- Re-running identical input writes nothing at all (`reused: true`). A changed plan becomes a new version
+  (`replan: "new-version"` by default; `"fail"` refuses with `IDEMPOTENCY_CONFLICT`; `"in-place"` is legal only
+  on an empty, unprovenanced draft).
+- Every authored version records its authorship — planner version, rules version, seed, and both fingerprints —
+  and that provenance is never rewritten, so a future planner release cannot reinterpret an old plan.
+- A run the rules reject exits 3 and persists nothing; a version whose stored rows fail validation afterwards
+  stays an editable `DRAFT` and says so (`PLANNER_PERSISTED_VALIDATION_MISMATCH`).
+- **Phase 4B stops at the plan.** There is no `planner execute` command; `plan preview` stays the read-only view
+  of the Phase 3 commands a later phase would submit.
+
+The engine's contracts, canonical normalization, identity derivation, and rule-by-rule behaviour are specified
+in [docs/planner-engine.md](./docs/planner-engine.md).
+
 ## Browser diagnostics and live Flow smoke
 
 The safe prompt-only diagnostic does not click Generate, but it requires a deliberately prepared, manually authenticated Flow page with an empty prompt editor:
@@ -153,4 +191,4 @@ The exact Node-header path is machine-specific. In the Phase 1 sandbox the local
 
 ## Safety boundary
 
-Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, AI planner, agent system, publishing, analytics, or full video pipeline in this phase; the operator surface is the CLI over the application services. Phase 4A adds the planning *domain* only: no model call, no autonomous planner, no provider-implementation change, and no plan that can execute without the explicit Phase 3 commands above.
+Browser automation attaches only to a user-authorized, manually authenticated session and uses visible UI operations. FlowForge must not bypass authentication, CAPTCHA, platform security controls, or provider restrictions; extract/store/log cookies, credentials, or tokens; call private APIs; or hard-code secrets. Authentication remains manual. Changed UI, blocked state, or uncertain correlation pauses the same durable attempt; a timeout is not treated as proof of provider failure and does not trigger blind resubmission. Local job cancellation is supported, but remote Google Flow cancellation is deliberately conservative: no generic Stop control is clicked unless ownership of that generation is unambiguous. There is no web UI/API, worker daemon, AI planner, agent system, publishing, analytics, or full video pipeline in this phase; the operator surface is the CLI over the application services. Phases 4A and 4B add the planning *domain* and a *deterministic* planner: no model call, no provider-implementation change, and no plan that can execute without the explicit Phase 3 commands above — 4B's planner refuses rather than guessing, and ships no execution command.

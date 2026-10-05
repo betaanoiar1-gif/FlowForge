@@ -270,7 +270,7 @@ export const PLANNING_COMMANDS: Record<string, CommandDefinition> = {
     run({ options, globals, app }) {
       const versions = app.planReads.versions(requireString(options, "plan-id"));
       emit(globals, versions, (value) => [
-        "version  status      scenes  specs  validation      current  lineage",
+        "version  status      scenes  specs  validation      current  lineage    authored",
         ...value.map((row) =>
           [
             `v${String(row.versionNumber).padEnd(2)}`,
@@ -280,6 +280,9 @@ export const PLANNING_COMMANDS: Record<string, CommandDefinition> = {
             `${row.validationStatus ?? "never"}${row.validationStatus && !row.validationIsCurrent ? " (stale)" : ""}`.padEnd(15),
             row.validationIsCurrent ? "yes" : "no",
             row.predecessorVersionId ? `← ${short(row.predecessorVersionId)}` : "initial",
+            row.planned
+              ? `${row.plannerVersion ?? "planned"}${row.unchangedSincePlanning === false ? " (edited since)" : ""}`
+              : "hand-authored",
           ].join("  "),
         ),
       ]);

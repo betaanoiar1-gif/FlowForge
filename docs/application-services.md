@@ -37,9 +37,14 @@ models**.
 | `QueueService` | queue depth/inspection read models and **worker execution driving** (`runOnce`, `runUntilIdle`) behind a provider-coverage guard | lease SQL, retry transitions, recovery SQL (delegates to `SqliteJobRepository`/`LocalQueueWorker`) |
 | `ReviewService` | review queue read model, explicit APPROVE/REJECT decision, explicit approved+QC-passing selection | selection heuristics, auto-approval, QC recomputation |
 | `ProductionService` | derived production-readiness projection per scene/project and the guarded `READY` transition | new state source of truth |
+| `PlannerService` (Phase 4B) | assembling an explicit `PlannerInput` from reviewed reads, running the pure deterministic engine, and authoring a `SUCCESS` draft through the Phase 4A plan services; replan policy, content-based reuse, provenance recording, and post-write revalidation | SQL, provider construction or calls, queue submission, job creation, publishing, any content decision of its own (the rules own those) |
 
 Shared construction lives in `createApplication()` (`packages/services`), which wires an
-already-open repository, queue, optional worker, and optional provider registry.
+already-open repository, queue, optional worker, and optional provider registry, and (from Phase 4A/4B
+on) an optional `planning` port that unlocks `plans`, `planValidation`, `planReads`, and `planner`.
+`mapPlanToJobs` (`packages/services/src/plan-execution.ts`) is exported beside this service as a pure
+function that turns an approved plan snapshot into Phase 3 command intents; nothing in `packages/services`
+calls it, so planning cannot execute a plan by accident.
 
 ## 3. Command/query split
 
@@ -100,7 +105,10 @@ already-open repository, queue, optional worker, and optional provider registry.
 `SelectedAsset`, `ProductionReadiness`, `ProjectProductionSummary`. Counts come from the
 repository (`countGenerationJobs`, `queueSize`, `listQueueItems`) instead of being
 reconstructed in the CLI. Long prompt text is omitted from list/board projections and shown
-only in detail projections.
+only in detail projections. The planning read models (`packages/services/src/planning-read-models.ts`)
+follow the same rule, and Phase 4B added the planner view to them (`planned`, `plannerVersion`,
+`rulesVersion`, `seed`, `traceSteps`, `contentMatchesProvenance`, `detail`) — an absent provenance reads as
+"authored by hand", never as an error.
 
 ## 7. Operator surface
 
@@ -109,7 +117,8 @@ only in detail projections.
 `docs/vertical-slice.md` stay valid. Commands are: `project create|list|show`,
 `scene create|list|show|version add|version set-current|status set`,
 `generate`, `status`, `queue status|run|recover`, `cancel`, `retry`,
-`review list|show|approve|reject|select`, `production scene|project`. Output is
+`review list|show|approve|reject|select`, `production scene|project`, `brief`/`definition`/`plan` for the
+planning domain, and `planner rules|run` for Phase 4B. Output is
 `--json` (machine-readable) or a human summary; both are generated from the same read
 model. Exit codes: `0` success, `1` application/domain error, `2` usage error, `3`
 operator-blocking state (readiness not satisfied, provider coverage incomplete).
@@ -177,7 +186,7 @@ orchestration, no publishing, no billing/analytics, no full video pipeline, no l
 Google Flow validation. `BrowserSessionLauncher` and the Google Flow manual-auth gate are
 unchanged. Redis/Kafka/RabbitMQ/Kubernetes remain excluded (D-014/D-015/D-016).
 
-## 10. Phase 4A continuation
+## 11. Phase 4A continuation
 
 Phase 4A extends these services with the creative planning domain — `CreativeBriefService`,
 `PlanningDefinitionService`, `ProductionPlanService`, `PlanningValidationService`, and
@@ -191,3 +200,22 @@ Planning is a layer *above* this one: no service here changed its queue, worker,
 review behaviour, and the planning services own no execution path. The model, lifecycle, validation
 rules, persistence shape, idempotency keys, CLI, and verified walkthrough live in
 [docs/planning-domain.md](./planning-domain.md).
+
+## 12. Phase 4B continuation
+
+Phase 4B adds one service, `PlannerService`, and one pure subsystem, `packages/services/src/planner/`. It
+does not change the ownership rules above: the engine decides content and reads nothing; the service reads
+through the existing ports, writes only through the Phase 4A plan services, and reuses their idempotency,
+content hashing, lifecycle guards, and triggers rather than adding a parallel mechanism. `createApplication`
+exposes it as `app.planner` (`PlannerService`), whose only command is `plan(PlanProductionCommand)`. The
+package additionally re-exports the engine as a namespace (`import { planner } from "@flowforge/services"`)
+so tests and tooling can call `planner.runPlanner`, read `planner.PLANNER_RULES`, or derive
+`planner.planIdentityId` without touching persistence.
+
+Contracts, the 12-rule registry, canonical normalization and fingerprints, replan policies, provenance, and
+the "stops at the plan" boundary are specified in [docs/planner-engine.md](./planner-engine.md).
+
+Verification for the whole planning line (4A + 4B) on this checkout: `corepack pnpm build` and
+`corepack pnpm typecheck` clean across the workspace, `corepack pnpm test` 165/165 (Phase 3's 75, Phase 4A's
+40, plus Phase 4B's 50), and `corepack pnpm vertical-slice` passing unchanged. Live Google Flow execution
+remains **NOT RUN**; no planning or provider test requires an account or a browser.

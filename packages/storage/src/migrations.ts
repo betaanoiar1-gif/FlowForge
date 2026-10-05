@@ -93,7 +93,7 @@ const LEGACY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_assets_sha256 ON assets(sha256);
 `;
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export function migrateDatabase(db: Database.Database): void {
   let version = Number(db.pragma("user_version", { simple: true }));
@@ -132,7 +132,82 @@ export function migrateDatabase(db: Database.Database): void {
       migrateToVersionFour(db);
       db.pragma("user_version = 4");
     }).immediate();
+    version = 4;
   }
+
+  if (version < 5) {
+    db.transaction(() => {
+      migrateToVersionFive(db);
+      db.pragma("user_version = 5");
+    }).immediate();
+  }
+}
+
+/**
+ * v5 — deterministic planner provenance (Phase 4B).
+ *
+ * Additive only: seven nullable columns on `production_plan_versions`, plus two triggers. Versions
+ * authored before Phase 4B keep `planner_version IS NULL`, which is how an operator (and the read
+ * models) tell a planned version from a hand-authored one. Nothing is recreated or rewritten.
+ *
+ * Provenance is written once and never amended: a plan must remain attributable to the exact engine,
+ * rule set, seed, and input that produced it, so a future planner version cannot silently
+ * reinterpret an old plan. `planner_content_hash` records the version's content hash as the planner
+ * left it, which is what lets a later run distinguish "same plan, unchanged" from "someone edited
+ * it afterwards".
+ */
+function migrateToVersionFive(db: Database.Database): void {
+  addColumn(db, "production_plan_versions", "planner_version TEXT");
+  addColumn(db, "production_plan_versions", "planner_rules_version TEXT");
+  addColumn(db, "production_plan_versions", "planner_seed INTEGER");
+  addColumn(db, "production_plan_versions", "planner_input_fingerprint TEXT");
+  addColumn(db, "production_plan_versions", "planner_output_fingerprint TEXT");
+  addColumn(db, "production_plan_versions", "planner_content_hash TEXT");
+  addColumn(db, "production_plan_versions", "planner_trace_json TEXT");
+
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_provenance_is_write_once
+      BEFORE UPDATE ON production_plan_versions
+      WHEN OLD.planner_version IS NOT NULL AND (
+        NEW.planner_version IS NOT OLD.planner_version
+        OR NEW.planner_rules_version IS NOT OLD.planner_rules_version
+        OR NEW.planner_seed IS NOT OLD.planner_seed
+        OR NEW.planner_input_fingerprint IS NOT OLD.planner_input_fingerprint
+        OR NEW.planner_output_fingerprint IS NOT OLD.planner_output_fingerprint
+        OR NEW.planner_content_hash IS NOT OLD.planner_content_hash
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'planner provenance is recorded once and never rewritten');
+      END;
+
+    /*
+     * Provenance is meaningful only as a complete identity tuple, never as a fragment. The same rule is
+     * enforced on INSERT and on UPDATE: without the update variant, a caller that bypassed the repository
+     * could attach half a tuple to a version that had none, and "planned by v1 with seed 4" would be
+     * recoverable only from whichever columns happened to be set.
+     */
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_provenance_must_be_complete
+      BEFORE INSERT ON production_plan_versions
+      WHEN (NEW.planner_version IS NULL) <> (NEW.planner_rules_version IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_seed IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_input_fingerprint IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_output_fingerprint IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_content_hash IS NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'planner provenance must be recorded as a complete set');
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS production_plan_version_provenance_must_be_complete_on_update
+      BEFORE UPDATE ON production_plan_versions
+      WHEN (NEW.planner_version IS NULL) <> (NEW.planner_rules_version IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_seed IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_input_fingerprint IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_output_fingerprint IS NULL)
+        OR (NEW.planner_version IS NULL) <> (NEW.planner_content_hash IS NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'planner provenance must be recorded as a complete set');
+      END;
+  `);
 }
 
 function migrateToVersionTwo(db: Database.Database): void {

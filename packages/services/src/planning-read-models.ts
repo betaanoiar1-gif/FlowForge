@@ -124,7 +124,53 @@ export interface PlanVisualDnaResolution {
   resolvedInProject: boolean;
 }
 
+/**
+ * How a plan version relates to the deterministic planner (Phase 4B). Absent provenance is normal and
+ * means "a human authored this"; it is never reported as an error, only as the absence of a planner run.
+ */
+export interface PlanPlannerView {
+  planned: boolean;
+  plannerVersion?: string;
+  rulesVersion?: string;
+  seed?: number;
+  inputFingerprint?: string;
+  outputFingerprint?: string;
+  traceSteps: number;
+  /**
+   * Whether the stored content is still exactly what the planner wrote. `null` when there is no
+   * provenance to compare against — a version that was never planned is neither matched nor drifted.
+   */
+  contentMatchesProvenance: boolean | null;
+  detail: string;
+}
+
+export function toPlanPlannerView(
+  version: ProductionPlanVersion,
+  currentContentHash: string,
+): PlanPlannerView {
+  if (version.plannerVersion === undefined || version.plannerInputFingerprint === undefined) {
+    return { planned: false, traceSteps: 0, contentMatchesProvenance: null, detail: "authored by hand" };
+  }
+  const matches =
+    version.plannerContentHash !== undefined && version.plannerContentHash === currentContentHash;
+  return {
+    planned: true,
+    plannerVersion: version.plannerVersion,
+    rulesVersion: version.plannerRulesVersion,
+    ...(version.plannerSeed === undefined ? {} : { seed: version.plannerSeed }),
+    inputFingerprint: version.plannerInputFingerprint,
+    ...(version.plannerOutputFingerprint === undefined ? {} : { outputFingerprint: version.plannerOutputFingerprint }),
+    traceSteps: version.plannerTrace?.length ?? 0,
+    contentMatchesProvenance: version.plannerContentHash === undefined ? null : matches,
+    detail: matches
+      ? `planned by ${version.plannerVersion} and unchanged since`
+      : `planned by ${version.plannerVersion}, then edited: the stored content no longer matches the planner's output`,
+  };
+}
+
 export interface PlanDetail {
+  /** Provenance of the deterministic planner run that authored this version, when there was one. */
+  planner: PlanPlannerView;
   plan: ProductionPlan;
   brief: CreativeBrief | null;
   version: ProductionPlanVersion;

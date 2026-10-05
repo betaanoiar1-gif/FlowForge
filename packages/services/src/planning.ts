@@ -54,10 +54,12 @@ import {
   resolveVisualDna,
   resolveWorld,
   toPlanApprovalView,
+  toPlanPlannerView,
   toPlanValidationView,
   type ExecutionPreview,
   type PlanDetail,
   type PlanListItem,
+  type PlanPlannerView,
   type PlanScenePlanRow,
   type PlanValidationView,
   type ProjectPlanningOverview,
@@ -82,13 +84,15 @@ export function planningNotConfigured(): ApplicationError {
   );
 }
 
-function requirePlanning(deps: ServiceDeps): PlanningRepository {
+/** Shared with the planner service: the one gate that says whether planning is wired at all. */
+export function requirePlanning(deps: ServiceDeps): PlanningRepository {
   if (!deps.planning) throw planningNotConfigured();
   return deps.planning;
 }
 
 /** Keeps repository rejections operator-readable without hiding anything unexpected. */
-function attempt<T>(
+/** Shared with the planner service; a repository rejection must never surface as a raw driver error. */
+export function attempt<T>(
   deps: ServiceDeps,
   run: () => T,
   code: ApplicationErrorCode,
@@ -626,6 +630,9 @@ export class ProductionPlanService {
       this.deps,
       () =>
         planning.addScenePlan({
+          // The planner authors with pre-minted ids so a re-plan is addressable; every other caller lets
+          // the repository mint one. Either way the row is written by the same reviewed method.
+          id: input.scenePlanId === undefined ? undefined : identifier(input.scenePlanId, "scenePlanId"),
           planVersionId: version.id,
           sceneKey: identifier(input.sceneKey, "sceneKey"),
           sceneNumber: integerRange(sceneNumber, "sceneNumber", { min: 1, max: 9_999 }),
@@ -705,6 +712,7 @@ export class ProductionPlanService {
       this.deps,
       () =>
         planning.addGenerationSpec({
+          id: input.specId === undefined ? undefined : identifier(input.specId, "specId"),
           scenePlanId,
           kind,
           instructions: requiredText(input.instructions, "instructions"),
@@ -871,6 +879,7 @@ export class PlanningReadService {
       plan,
       brief: snapshot.brief,
       version,
+      planner: toPlanPlannerView(version, planning.planVersionContentHash(version.id)),
       lineage: {
         predecessorVersionId: version.predecessorVersionId,
         successorVersionIds: planning
@@ -917,6 +926,11 @@ export class PlanningReadService {
     approvedBy?: string;
     approvedAt?: string;
     executableProviders?: string[];
+    planned: boolean;
+    plannerVersion?: string;
+    plannerRulesVersion?: string;
+    plannerSeed?: number;
+    unchangedSincePlanning: boolean | null;
   }> {
     const plan = this.getPlan(planIdInput);
     return this.planning.listPlanVersions(plan.id).map((version) => {
@@ -936,6 +950,14 @@ export class PlanningReadService {
         approvedBy: version.approvedBy,
         approvedAt: version.approvedAt,
         executableProviders: version.executableProviders,
+        // Planning provenance, so a version list says which entries a deterministic run authored and
+        // whether anyone has edited them since. `null` means "not planned", never "broken".
+        planned: version.plannerVersion !== undefined,
+        plannerVersion: version.plannerVersion,
+        plannerRulesVersion: version.plannerRulesVersion,
+        plannerSeed: version.plannerSeed,
+        unchangedSincePlanning:
+          version.plannerContentHash === undefined ? null : version.plannerContentHash === version.contentHash,
       };
     });
   }

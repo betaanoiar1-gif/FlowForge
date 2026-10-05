@@ -22,8 +22,10 @@ Planning Validation ──→ Approval ──→ Executability ─┤   (explici
 
 **Phase 4A is a domain foundation, not an AI planner.** There is no language model, no agent, no
 autonomous planning, and no provider call anywhere in the planning path. Planning data becomes
-durable, versioned, validatable, and executable; how it is *authored* (deterministic engine in
-Phase 4B, AI adapter in Phase 4C) is deliberately deferred.
+durable, versioned, validatable, and executable. Phase 4B then added the *authoring* half — a
+deterministic rule engine, still with no model and no provider call — and this document stays the
+authority for the aggregate it writes into; the engine itself is specified in
+[planner-engine.md](./planner-engine.md). Phase 4C (an optional AI adapter) remains unbuilt.
 
 ## 1. Domain model
 
@@ -206,6 +208,14 @@ new `characters` columns, plus new tables. No `DROP`, no `DELETE`, no row rewrit
 recreation; migration of an existing v3 database is forward-only and repeatable (idempotent DDL,
 same `BEGIN IMMEDIATE` + `user_version` discipline as v2/v3).
 
+Phase 4B extends the same file with **v5**, also additive: seven nullable provenance columns on
+`production_plan_versions` (`planner_version`, `planner_rules_version`, `planner_seed`,
+`planner_input_fingerprint`, `planner_output_fingerprint`, `planner_content_hash`,
+`planner_trace_json`), deliberately outside `content_hash` so recording authorship never invalidates
+validation evidence. Triggers make the set complete-or-empty and **write-once**: an `UPDATE` that
+changes recorded provenance is refused at the SQL level, and `revise()` copies content but not
+provenance, so a hand-edited version cannot claim planner authorship.
+
 | Table | Purpose | Key constraints |
 | --- | --- | --- |
 | `creative_briefs` | immutable intent snapshots | `UNIQUE(project_id, version_number)`, `supersedes_brief_id` self-FK, no-update/no-delete triggers |
@@ -309,6 +319,10 @@ The CLI renders the same data humans and scripts consume:
 - **approval state** (version status, reviewer, decided timestamp, which evidence row was approved)
 - **executability** (executable flag, the providers recorded at that moment, per-spec capability
   coverage with candidate providers and unsatisfied capabilities, plus remaining blockers)
+- **planner provenance** (Phase 4B: `planned`, `plannerVersion`, `rulesVersion`, `seed`, `traceSteps`,
+  `contentMatchesProvenance`, and a `detail` sentence). Absent provenance is reported as
+  `authored by hand`, never as an error; a mismatch between the recorded content hash and the live one
+  is reported as "edited after planning", which is information an operator needs, not a failure.
 - remaining **validation errors**, full finding list with subjects
 - number of **scene plans**, **generation specs**, cast, worlds, and DNA snapshots
 - **next action** (`AUTHOR_PLAN`, `VALIDATE_PLAN`, `REVALIDATE_PLAN`, `APPROVE_PLAN`,
@@ -329,7 +343,11 @@ read-side gate, not a lifecycle state.
 
 Thirty commands, added to the existing `COMMANDS` table (`apps/cli/src/planning-commands.ts`), each
 delegating to a service method — the CLI contains no SQL and no direct writes, and renders the same
-read models for humans and `--json`. Global flags, exit codes (0 ok, 1 error, 2 usage error,
+read models for humans and `--json`. Phase 4B adds two more in a `planner` group
+(`apps/cli/src/planner-commands.ts`): `planner rules` prints the engine's frozen rule registry, and
+`planner run` plans a project's current brief into an ordinary plan version (`--dry-run`, `--approve`,
+`--providers`, `--seed`, `--scenes`, `--duration-ms`). There is deliberately **no** `planner execute`
+command: the phase stops at the plan. Global flags, exit codes (0 ok, 1 error, 2 usage error,
 3 operator-blocked), and reviewer defaulting are unchanged from Phase 3.
 
 ```bash
@@ -386,8 +404,11 @@ Rejections are typed: `PLAN_NOT_EDITABLE` and `PLAN_VALIDATION_REQUIRED` surface
 
 - **4A (this phase)**: durable model, versioning, lifecycle, deterministic validation, capability
   gate, execution preview, persistence, CLI, read models.
-- **4B — Planner Engine**: deterministic authoring (brief → plan tree) using the 4A contracts and
-  fixtures; may batch-write drafts through `ProductionPlanService` only.
+- **4B — Planner Engine** (*delivered*): deterministic authoring (brief → plan tree) through the 4A
+  contracts only. It writes via `ProductionPlanService` and its sibling plan methods, records write-once
+  provenance, reuses an identical version instead of writing, and exposes no execution command —
+  `mapPlanToJobs` emits Phase 3 command intents for tests, and submitting them stays an explicit later
+  decision. Specification: [planner-engine.md](./planner-engine.md).
 - **4C — AI Planner Adapter**: an optional adapter behind the planner interface returning
   schema-validated planning data. **Not part of Phase 4A.** Phase 4A contains no LLM call, no agent,
   no autonomous planning, no provider implementation change, no browser-automation change, no video

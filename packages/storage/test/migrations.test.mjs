@@ -60,7 +60,7 @@ test("legacy database migrates safely without replaying ambiguous active work", 
   let repository;
   try {
     repository = new SqliteJobRepository(dbPath);
-    assert.equal(repository.getSchemaVersion(), 4);
+    assert.equal(repository.getSchemaVersion(), 5);
     const completed = repository.getGenerationJob("legacy-completed");
     const active = repository.getGenerationJob("legacy-running");
     assert.equal(completed.status, "SUCCEEDED");
@@ -117,7 +117,7 @@ test("schema version 2 receives the late integrity triggers in forward migration
     raw = undefined;
 
     repository = new SqliteJobRepository(dbPath);
-    assert.equal(repository.getSchemaVersion(), 4);
+    assert.equal(repository.getSchemaVersion(), 5);
     repository.close();
     repository = undefined;
 

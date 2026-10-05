@@ -101,6 +101,10 @@ export type PlanningRepository = Pick<
   | "setPlanCurrentVersion"
   | "transitionPlanVersionStatus"
   | "copyPlanVersion"
+  // Deterministic planning (Phase 4B): a fresh empty version to plan into, and the provenance that
+  // says which planner version authored it. Both are additive methods on the same repository.
+  | "createPlanVersion"
+  | "setPlanVersionProvenance"
   // Children
   | "upsertStory"
   | "replacePlanCast"

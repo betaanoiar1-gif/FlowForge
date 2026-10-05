@@ -1,7 +1,7 @@
 # FlowForge Engineering Decision Log
 
 - **Started:** 2026-10-04
-- **Status note:** D-001–D-012 record Phase 0 architecture/research decisions, D-013–D-018 record Phase 1 implementation choices, D-019–D-022 record Phase 2 provider choices, D-023–D-027 record the Phase 3 application-service and operator-surface choices, and D-028–D-035 record the Phase 4A creative planning domain. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/vertical-slice.md](./docs/vertical-slice.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [docs/application-services.md](./docs/application-services.md), and [docs/planning-domain.md](./docs/planning-domain.md). Live Flow validation is blocked/not run.
+- **Status note:** D-001–D-012 record Phase 0 architecture/research decisions, D-013–D-018 record Phase 1 implementation choices, D-019–D-022 record Phase 2 provider choices, D-023–D-027 record the Phase 3 application-service and operator-surface choices, and D-028–D-035 record the Phase 4A creative planning domain, and D-036–D-042 record the Phase 4B deterministic planner engine. Implemented behavior and validation status are described in [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/vertical-slice.md](./docs/vertical-slice.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [docs/application-services.md](./docs/application-services.md), and [docs/planning-domain.md](./docs/planning-domain.md), and [docs/planner-engine.md](./docs/planner-engine.md). Live Flow validation is blocked/not run.
 
 ## D-001 — Google Flow is a replaceable provider, not the product core
 
@@ -317,3 +317,66 @@
 - **Decision:** `PlanningReadService.validationView` returns `PlanValidationView | null`, and `requireValidationView` throws `NOT_FOUND` for the transitions that genuinely need evidence (`approve`, `markExecutable`, the `validate` report projection). `planValidation` reads tolerate `null` briefs, stories, and validations and express the gap as a blocker (`VALIDATION_MISSING`) plus a next action (`AUTHOR_PLAN`/`VALIDATE_PLAN`). A CLI renderer that had a no-op conditional and a trailing blank line was fixed in the same pass, because operator output is part of the contract.
 - **Reason:** Absence of un-started work is information, not an error; the state machine already refuses the actions that require evidence.
 - **Trade-offs:** Read paths carry a nullable type, and a caller that *should* have evidence must remember to use the `require…` variant.
+
+## D-036 — The planner is a versioned rule registry, not a model
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** 4A left the plan aggregate fillable by hand, by a deterministic planner, or later by an AI adapter. The tempting implementation is a prompt to a language model that returns a plan tree; the requirement is a plan whose scene order, identifiers, durations, and capability requirements are reproducible and explainable.
+- **Options:** Ask a model and validate the result; write an ad-hoc scoring heuristic; or implement a pure engine as an ordered registry of named rules, versioned independently of the validator.
+- **Decision:** `packages/services/src/planner/` exposes `runPlanner(PlannerInput) → PlannerRun`: a pure function over explicit input, executing `PLANNER_RULES` — 12 frozen rules from `brief-foundation` to `plan-integrity`, each recording a trace step with what it read. `DETERMINISTIC_PLANNER_VERSION` (`deterministic-planner-v1`) and `PLANNING_RULES_VERSION` (`planning-rules-v1`) live in `@flowforge/core` and are distinct from the validator version. A source-scan test forbids randomness, clocks, I/O, and model/provider imports in that directory. `flowforge planner rules` prints the same registry, so operators read the algorithm the engine runs.
+- **Reason:** Determinism is what makes an approved plan reviewable later; a rule can be named, tested, versioned, and explained, while a model's plan cannot be re-derived once the provider changes. Keeping the engine pure also means 4C can add a model *behind the same input/result contracts* without touching persistence.
+- **Trade-offs:** Planning quality is bounded by the rules, and prose is never improved by the engine — a verbose beat yields a verbose scene. An AI planner (4C) must pass the same validator rather than being trusted to produce a plan.
+
+## D-037 — Canonical normalization fingerprints content, not write policy
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** Two runs must be comparable to decide "nothing changed", but the input contains both creative knobs and *how to write* knobs. Fingerprinting the whole input made an unchanged re-plan with a different `replan` policy look like new content, which would fork a version for a no-op.
+- **Options:** Compare the raw command; hash the whole normalized input; or hash a documented projection that keeps only what a rule can read.
+- **Decision:** `normalizePlannerInput` trims text, collapses internal whitespace, treats empty optionals as absent, trims but never rewrites identifiers, preserves meaningful order (beats, cast, themes, constraints) while sorting/deduplicating the semantically unordered (capability keys, provider candidates, duplicate references), floors durations to whole milliseconds, applies defaults *before* hashing, and drops fields no rule reads. `inputFingerprintOf` then hashes `fingerprintableView`, which excludes `replan` and `includeTrace`; `asOf` is excluded everywhere. `seed` stays in the hash, because it changes cast assignment and is therefore content. Canonical JSON lives in `packages/core/src/canonical-json.ts` (`canonicalize`, `stableJson`, `fingerprintJson`) with a namespace per digest kind.
+- **Reason:** The fingerprint should answer "is this the same plan?", so anything that cannot change the plan must not change the fingerprint — and prose is preserved verbatim because the operator's words are the creative record.
+- **Trade-offs:** A new option must be classified deliberately (content or policy); the projection is one more thing to keep honest, covered by a core test that pins ordering and stability.
+
+## D-038 — Plan and row identity are derived, with row ids scoped to the version
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** Idempotent authoring and a later execution mapping both need ids that recur across runs, but storage needs one primary key per row and two versions of one plan legitimately hold the same scene.
+- **Options:** `randomUUID()` per write (breaking reuse); reuse the draft's ids verbatim across versions (colliding keys); or derive identities from the input.
+- **Decision:** Every id is `plannerId(fingerprint, kind, path)` — a SHA-256 over the namespaced input fingerprint, kind, and deterministic path, formatted as a **UUID-shaped derived value** (fixed version/variant nibbles, no randomness). `planIdentityId({ projectId, briefId, title })` decides *which plan* a run targets and deliberately ignores seed and prose. `authoringId(inputFingerprint, planVersionId, kind, path)` scopes row ids per version, and `scenePlan`-kind references are re-pointed from drafted ids to row ids — a translation of identity, never of content. `sceneKey` is a position-free slug with `-2`, `-3` collision suffixes, so inserting a scene cannot rename the scenes behind it.
+- **Reason:** Same input yields the same ids, which is what makes a re-run a reuse and a re-map the same scenes and jobs; keying identity on `(project, brief, title)` keeps a new seed a new version of the same plan instead of a forked plan.
+- **Trade-offs:** Ids are opaque rather than sequential, and scene keys stay stable but not order-encoding — the explicit `sceneNumber` carries order.
+
+## D-039 — Planner provenance is an additive v5 column set with write-once triggers
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** A plan must say which planner version, rules version, seed, and fingerprints produced it, so that a future planner release cannot silently reinterpret an old plan. Options on the table were revision notes, a separate trace table, or columns.
+- **Options:** Record provenance as free-text in `plan_version_revisions`; create a `plan_version_provenance` (+ trace) table; or add nullable columns to `production_plan_versions` in a forward-only migration.
+- **Decision:** Migration v5 adds seven nullable columns — `planner_version`, `planner_rules_version`, `planner_seed`, `planner_input_fingerprint`, `planner_output_fingerprint`, `planner_content_hash`, `planner_trace_json` — outside the version `content_hash`, written by `setPlanVersionProvenance` as a complete set and made immutable by triggers that refuse any `UPDATE` changing a recorded value. `revise()` copies content but not provenance. The read model derives `planned`, `contentMatchesProvenance`, and a human `detail`, and reports an unprovenanced version as "authored by hand", never as an error.
+- **Reason:** Provenance belongs to the version row that the plan already keys on; triggers, not service discipline, are what make "recorded once, never rewritten" a database guarantee, and keeping it out of the content hash means recording authorship never invalidates validation evidence.
+- **Trade-offs:** The trace is stored in a JSON column rather than queryable rows (it is an explanation artifact, read whole), and re-planning into a version that already carries provenance is impossible by design — the answer is a new version.
+
+## D-040 — Planner writes are content-based reuse first, then an explicit replan policy
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** Running the planner twice is the normal operator behaviour, so the engine seam needs an idempotency rule that neither duplicates a plan nor destroys hand edits. 4A already owns one idempotency system; the planner must not invent a second.
+- **Options:** Always fork a new version; overwrite the current version's scene plans; or compare the run's fingerprints against the recorded ones and write nothing on a match.
+- **Decision:** `resolveTarget` reuses the current version when its stored `inputFingerprint`, `outputFingerprint`, and `contentHash` all match this run and the content hash still recomputes — `reused: true`, zero writes, and the stored validation view reported. Otherwise `replan: "new-version"` (default) forks with `predecessorVersionId` set, `"fail"` raises `IDEMPOTENCY_CONFLICT`, and `"in-place"` is legal only on an editable (`DRAFT`/`VALIDATED`) version that carries **no** provenance and **no** hand-authored scene plans; a provenanced version refuses with `IDEMPOTENCY_CONFLICT` because provenance is write-once (D-039). A `dryRun` runs the engine and writes nothing at all, including provenance.
+- **Reason:** "Same content, same version" makes the operation safe to repeat and preserves recoverability, while the policy field keeps the choice visible instead of implicit. Refusing rather than deleting is what protects work the planner cannot rebuild.
+- **Trade-offs:** In-place re-planning is available only for an empty unprovenanced version, so an operator iterating on a planned version accumulates versions — which is also the audit trail.
+
+## D-041 — Planning stops at the plan: execution mapping emits intents and nothing else
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** A planned version is *executable-ready*, which invites wiring plan → jobs in the same phase and exposing a `planner execute` command. Phase 3 already owns submission, idempotency, leases, retries, and QC; 4B owns authoring.
+- **Options:** Submit jobs from the planner; add a CLI `planner execute`; or provide a pure mapping at service level, proven by deterministic tests, with no submit call and no command.
+- **Decision:** `mapPlanToJobs(snapshot, { providers, … })` in `packages/services/src/plan-execution.ts` consumes the 4A execution preview and returns typed `CreateGenerationJobIntent`s with deterministic `sceneId` and `jobKey` (scoped by `plannerOutputFingerprint ?? contentHash`), `blockers` (`PLAN_NOT_APPROVED` unless approved or explicitly `allowUnapproved`), and `skipped` entries (`NO_CAPABLE_PROVIDER`). It calls no `GenerationService`, writes no job or queue row, and no CLI command invokes it; `plan preview` stays the read-only operator view. A test asserts that `planner execute|submit|queue` does not exist.
+- **Reason:** Submitting is a side effect with a different failure model, so it must be a deliberate call, not a by-product of planning; and re-implementing provider selection would have created a second execution engine next to 4A's preview.
+- **Trade-offs:** The end-to-end "plan → mock generation" loop is not closed inside 4B — that is the named 4B-follow-on in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), and its building blocks are already tested.
+
+## D-042 — A stored plan that fails validation is reported and left editable
+
+- **Date / status:** 2026-10-05 · Accepted and tested (Phase 4B)
+- **Context:** The engine self-checks its draft with the same validator before anything is written, yet between draft and rows a concurrent edit, a rule drift, or a persistence quirk can make the stored aggregate fail. Deleting the version would destroy the operator's data; keeping it approved would be dishonest.
+- **Options:** Trust the draft check and report success; roll the version back; or keep the authored rows, downgrade the reported outcome, and leave the version editable.
+- **Decision:** After authoring, the service records provenance and **revalidates the stored rows**. If that report is not `PASSED`, the result outcome becomes `VALIDATION_FAILURE` with the notice `PLANNER_PERSISTED_VALIDATION_MISMATCH`, the version stays `DRAFT` (unapproved, re-planable into a new version), and `nextAction` names the repair. Approval and executability are only ever reached through the 4A gates, so a mismatch can never be `APPROVED`.
+- **Reason:** The authoritative evidence is about rows, not drafts; keeping the version recoverable and loudly reported preserves the Phase 1/3 guarantees (persist before destructive transitions, no silent success) and leaves the operator something to inspect.
+- **Trade-offs:** A rare run leaves an unusable draft version behind rather than a clean slate — and the plan's own `nextAction` says so, instead of the tool quietly hiding the trace of what it did.

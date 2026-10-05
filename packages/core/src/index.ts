@@ -370,4 +370,5 @@ export interface ReviewRecord {
   updatedAt: string;
 }
 
+export * from "./canonical-json.js";
 export * from "./planning.js";

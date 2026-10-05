@@ -26,6 +26,7 @@ import {
   type CommandDefinition,
 } from "./command-context.js";
 import { PLANNING_COMMANDS } from "./planning-commands.js";
+import { PLANNER_COMMANDS } from "./planner-commands.js";
 
 /**
  * Codes where the command was well formed and the durable state legitimately refuses it. Planning
@@ -511,6 +512,7 @@ const COMMANDS: Record<string, CommandDefinition> = {
     },
   },
   ...PLANNING_COMMANDS,
+  ...PLANNER_COMMANDS,
   "production ready": {
     usage: "production ready --scene-id ID",
     summary: "Mark a scene READY after the readiness gate passes.",

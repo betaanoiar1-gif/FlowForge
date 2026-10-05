@@ -87,10 +87,10 @@ function seedAuthoring(planning, { projectId, briefId, planId = "plan-1", planTi
   return { dna, world, ...created };
 }
 
-test("the planning tables are created additively and the schema version advances to four", async () => {
+test("the planning tables are created additively and the schema version advances to five", async () => {
   const harness = await createRepository();
   try {
-    assert.equal(harness.jobs.getSchemaVersion(), 4);
+    assert.equal(harness.jobs.getSchemaVersion(), 5);
     const names = harness.db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
       .all()
@@ -117,7 +117,7 @@ test("the planning tables are created additively and the schema version advances
   }
 });
 
-test("a v3 database upgrades to v4 without touching existing rows", async () => {
+test("a v3 database upgrades to the current schema version without touching existing rows", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "flowforge-planning-upgrade-"));
   const file = path.join(directory, "flowforge.sqlite");
   try {
@@ -141,12 +141,12 @@ test("a v3 database upgrades to v4 without touching existing rows", async () => 
 
     // Pretend the file predates this phase, then let the current build migrate it forward.
     const raw = new Database(file);
-    assert.equal(Number(raw.pragma("user_version", { simple: true })), 4);
+    assert.equal(Number(raw.pragma("user_version", { simple: true })), 5);
     raw.pragma("user_version = 3");
     raw.close();
 
     const reopened = new SqliteJobRepository(file);
-    assert.equal(reopened.getSchemaVersion(), 4);
+    assert.equal(reopened.getSchemaVersion(), 5);
     const project = reopened.getProject("legacy");
     assert.equal(project.description, "kept");
     assert.equal(reopened.listProjectScenes("legacy").length, 1);

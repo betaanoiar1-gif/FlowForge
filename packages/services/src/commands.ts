@@ -1,4 +1,10 @@
 import type { SceneStatus } from "@flowforge/core";
+import type {
+  PlannerCastInput,
+  PlannerOptionsInput,
+  PlannerStoryInput,
+  PlannerWorldInput,
+} from "./planner/types.js";
 
 /**
  * Command inputs for the application layer. They are intentionally narrow: an operator names
@@ -194,6 +200,11 @@ export interface SetPlanCastCommand extends PlanVersionTarget {
 }
 
 export interface AddScenePlanCommand extends PlanVersionTarget {
+  /**
+   * Row id for the scene plan. Normally absent, and the repository mints one; the deterministic planner
+   * supplies it so a re-plan of the same input lands on the same row id within a version.
+   */
+  scenePlanId?: string;
   sceneKey: string;
   sceneNumber?: number;
   title: string;
@@ -217,6 +228,8 @@ export interface SetScenePlanCastCommand {
 
 export interface AddGenerationSpecCommand {
   scenePlanId: string;
+  /** Row id for the spec, for the same reason as `AddScenePlanCommand.scenePlanId`. */
+  specId?: string;
   /** Validated against `GENERATION_SPEC_KINDS` by the service, not by the caller. */
   kind: string;
   instructions: string;
@@ -234,5 +247,36 @@ export interface PlanLifecycleCommand extends PlanVersionTarget {
   reviewer?: string;
   providers?: readonly string[];
   note?: string;
+  now?: string;
+}
+
+/**
+ * Plan a production plan deterministically from the project's brief (Phase 4B). The planner reads only
+ * what this command and the wired application give it: the brief, the project's definitions, and the
+ * capability declarations of the providers named in `providers`.
+ */
+export interface PlanProductionCommand {
+  projectId: string;
+  /** Absent means the project's current active brief. */
+  briefId?: string;
+  /** Plan title; defaults to "<brief title> plan" by rule. */
+  planTitle?: string;
+  /** The narrative the plan is built from; the brief alone is enough to derive beats. */
+  story?: PlannerStoryInput;
+  cast?: readonly PlannerCastInput[];
+  worlds?: readonly PlannerWorldInput[];
+  visualDnaId?: string;
+  options?: PlannerOptionsInput;
+  /**
+   * Provider ids whose capability declarations shape the plan. Omitted means every provider configured
+   * in this process; an empty process registry means the planner assumes nothing and the executability
+   * gate keeps that job.
+   */
+  providers?: readonly string[];
+  /** Report what would be planned without writing a byte. */
+  dryRun?: boolean;
+  /** Validate, approve, and (when providers are named) mark executable in one call. */
+  approve?: boolean;
+  reviewer?: string;
   now?: string;
 }

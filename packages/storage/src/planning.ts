@@ -27,6 +27,8 @@ import {
   type WorldDefinition,
   type WorldVisualIdentity,
   type PlanVersionStatus,
+  type PlanProvenance,
+  type PlannerTraceStep,
 } from "@flowforge/core";
 import {
   createPlanningContentHash,
@@ -391,6 +393,116 @@ export class SqlitePlanningRepository {
         .run(versionId, planId);
       this.refreshContentHash(versionId, now);
       return { plan: this.requirePlan(planId), version: this.requirePlanVersion(versionId), created: true };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Starts an empty DRAFT version of an existing plan and points the plan at it (Phase 4B).
+   *
+   * A re-plan must never edit the version it replaces. `copyPlanVersion` exists for revisions that
+   * *preserve* content; this primitive exists for the planner authoring a fresh version from new
+   * input. The previous version keeps its content, evidence, and lifecycle status untouched, and
+   * lineage is recorded so the new version is traceable to its predecessor. Provenance is not
+   * carried over: it identifies the run that produced a specific content, and this content is new.
+   */
+  createPlanVersion(input: CreatePlanVersionInput): {
+    plan: ProductionPlan;
+    version: ProductionPlanVersion;
+  } {
+    const transaction = this.db.transaction((): {
+      plan: ProductionPlan;
+      version: ProductionPlanVersion;
+    } => {
+      const now = input.now ?? new Date().toISOString();
+      const plan = this.requirePlan(input.planId);
+      const versionId = input.id ?? randomUUID();
+      const predecessor =
+        input.predecessorVersionId === undefined ? undefined : this.requirePlanVersion(input.predecessorVersionId);
+      if (predecessor && predecessor.planId !== plan.id) {
+        throw new Error(`Plan version ${predecessor.id} is not a version of ${plan.id}.`);
+      }
+      const nextNumber = (this.db
+        .prepare("SELECT MAX(version_number) AS max FROM production_plan_versions WHERE plan_id = ?")
+        .get(plan.id) as { max: number | null }).max! + 1;
+      if (predecessor && predecessor.versionNumber >= nextNumber) {
+        throw new Error("Plan version predecessor must be an earlier version of the same plan.");
+      }
+      this.db.prepare(
+        `INSERT INTO production_plan_versions (
+           id, plan_id, version_number, status, content_hash, visual_dna_id, predecessor_version_id,
+           revision_note, created_at, updated_at
+         ) VALUES (?, ?, ?, 'DRAFT', '', ?, ?, ?, ?, ?)`,
+      ).run(
+        versionId,
+        plan.id,
+        nextNumber,
+        input.visualDnaId ?? predecessor?.visualDnaId ?? null,
+        predecessor?.id ?? null,
+        optionalText(input.note) ?? "",
+        now,
+        now,
+      );
+      // Last write, as in `createPlanWithInitialVersion`: the membership trigger can only verify a
+      // pointer whose target row already exists.
+      this.db
+        .prepare("UPDATE production_plans SET current_version_id = ?, updated_at = ? WHERE id = ?")
+        .run(versionId, now, plan.id);
+      this.refreshContentHash(versionId, now);
+      return { plan: this.requirePlan(plan.id), version: this.requirePlanVersion(versionId) };
+    });
+    return transaction.immediate();
+  }
+
+  /**
+   * Records planner provenance for a version once. Provenance identifies the engine, rule set, seed,
+   * and fingerprints that produced the content, so it is written when a planning run finishes and
+   * never amended afterwards (a v5 trigger enforces write-once at the database level too). An
+   * identical repeat is a no-op rather than a rewrite, so an idempotent re-plan does not churn rows.
+   */
+  setPlanVersionProvenance(input: SetPlanProvenanceInput): {
+    version: ProductionPlanVersion;
+    created: boolean;
+  } {
+    const transaction = this.db.transaction((): { version: ProductionPlanVersion; created: boolean } => {
+      const now = input.now ?? new Date().toISOString();
+      const version = this.requireEditableVersion(input.planVersionId);
+      const provenance = input.provenance;
+      if (version.plannerVersion !== undefined) {
+        if (
+          version.plannerVersion !== provenance.plannerVersion ||
+          version.plannerRulesVersion !== provenance.rulesVersion ||
+          version.plannerSeed !== provenance.seed ||
+          version.plannerInputFingerprint !== provenance.inputFingerprint ||
+          version.plannerOutputFingerprint !== provenance.outputFingerprint
+        ) {
+          throw new Error(
+            `Plan version ${version.id} already carries provenance from ${version.plannerVersion}; ` +
+              "create a new version to re-plan it.",
+          );
+        }
+        return { version, created: false };
+      }
+      this.db
+        .prepare(
+          `UPDATE production_plan_versions
+           SET planner_version = ?, planner_rules_version = ?, planner_seed = ?,
+               planner_input_fingerprint = ?, planner_output_fingerprint = ?, planner_content_hash = ?,
+               planner_trace_json = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          provenance.plannerVersion,
+          provenance.rulesVersion,
+          provenance.seed,
+          provenance.inputFingerprint,
+          provenance.outputFingerprint,
+          provenance.contentHash,
+          provenance.trace.length > 0 ? encodeJson(provenance.trace) : null,
+          now,
+          version.id,
+        );
+      return { version: this.requirePlanVersion(version.id), created: true };
     });
     return transaction.immediate();
   }
@@ -1365,6 +1477,22 @@ export interface CreatePlanInput {
   now?: string;
 }
 
+export interface CreatePlanVersionInput {
+  id?: string;
+  planId: string;
+  /** Lineage for a re-plan; the version content is authored fresh, not copied. */
+  predecessorVersionId?: string;
+  visualDnaId?: string;
+  note?: string;
+  now?: string;
+}
+
+export interface SetPlanProvenanceInput {
+  planVersionId: string;
+  provenance: PlanProvenance;
+  now?: string;
+}
+
 export interface UpsertStoryInput {
   planVersionId: string;
   premise: string;
@@ -1564,6 +1692,13 @@ interface PlanVersionRow {
   approved_validation_id: string | null;
   executable_at: string | null;
   executable_providers_json: string | null;
+  planner_version: string | null;
+  planner_rules_version: string | null;
+  planner_seed: number | null;
+  planner_input_fingerprint: string | null;
+  planner_output_fingerprint: string | null;
+  planner_content_hash: string | null;
+  planner_trace_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1742,6 +1877,15 @@ function planVersionFromRow(row: PlanVersionRow): ProductionPlanVersion {
     executableAt: row.executable_at ?? undefined,
     executableProviders: row.executable_providers_json
       ? decodeJson<string[]>(row.executable_providers_json, [])
+      : undefined,
+    plannerVersion: row.planner_version ?? undefined,
+    plannerRulesVersion: row.planner_rules_version ?? undefined,
+    plannerSeed: row.planner_seed ?? undefined,
+    plannerInputFingerprint: row.planner_input_fingerprint ?? undefined,
+    plannerOutputFingerprint: row.planner_output_fingerprint ?? undefined,
+    plannerContentHash: row.planner_content_hash ?? undefined,
+    plannerTrace: row.planner_trace_json
+      ? decodeJson<PlannerTraceStep[]>(row.planner_trace_json, [])
       : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

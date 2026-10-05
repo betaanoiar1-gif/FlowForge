@@ -218,8 +218,45 @@ export interface ProductionPlanVersion {
   approvedValidationId?: Id;
   executableAt?: string;
   executableProviders?: string[];
+  /**
+   * Planning provenance (Phase 4B). Present only when the deterministic planner authored this
+   * version, and recorded once: a later planner version must not silently reinterpret the plan, so
+   * the full identity tuple (planner, rules, seed, fingerprints) stays attached to the content it
+   * produced. A revised or hand-edited version has no provenance of its own.
+   */
+  plannerVersion?: string;
+  plannerRulesVersion?: string;
+  plannerSeed?: number;
+  plannerInputFingerprint?: string;
+  plannerOutputFingerprint?: string;
+  /** The version's content hash as the planner left it: "unchanged since planning" is derivable. */
+  plannerContentHash?: string;
+  plannerTrace?: PlannerTraceStep[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** Which rules ran, in order, and what they decided — persisted as plan provenance. */
+export type PlannerTraceOutcome = "APPLIED" | "SKIPPED";
+
+export interface PlannerTraceStep {
+  rule: string;
+  outcome: PlannerTraceOutcome;
+  /** IDs or scene keys the rule touched, in the order it touched them. */
+  subjects?: string[];
+  detail?: string;
+}
+
+/** Everything a planner run is identified by, persisted with the version it authored. */
+export interface PlanProvenance {
+  plannerVersion: string;
+  rulesVersion: string;
+  seed: number;
+  inputFingerprint: string;
+  outputFingerprint: string;
+  /** Content hash immediately after the run, so later edits are detectable. */
+  contentHash: string;
+  trace: PlannerTraceStep[];
 }
 
 export interface PlanStory {
@@ -333,6 +370,17 @@ export interface GenerationSpecRequirements {
  * ------------------------------------------------------------------ */
 
 export const PLANNING_VALIDATOR_VERSION = "planning-deterministic-v1";
+
+/**
+ * The deterministic planner engine's own version (Phase 4B). It is deliberately distinct from
+ * `PLANNING_VALIDATOR_VERSION`: one identifies *who authored* a plan, the other identifies *who
+ * checked* it. Persisted planner provenance is meaningless if a future engine silently reuses the
+ * same identifier, so changing a rule that affects output means bumping the rules version, and
+ * changing the engine's shape means bumping the planner version.
+ */
+export const DETERMINISTIC_PLANNER_VERSION = "deterministic-planner-v1";
+/** Version of the rule set (order included) that `deterministic-planner-v1` runs. */
+export const PLANNING_RULES_VERSION = "planning-rules-v1";
 
 export type PlanningFindingSeverity = "ERROR" | "WARNING";
 

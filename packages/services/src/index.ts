@@ -20,6 +20,10 @@ export {
   type FlowForgeApplication,
 } from "./application.js";
 export { ProjectService } from "./project-service.js";
+// The deterministic planner (Phase 4B): the engine module and the service that authors plans with it.
+export { PlannerService, type PlanProductionResult } from "./planner-service.js";
+export { mapPlanToJobs, type PlanExecutionMapping, type PlanExecutionOptions, type PlannedJobIntent } from "./plan-execution.js";
+export * as planner from "./planner/index.js";
 export { SceneService } from "./scene-service.js";
 export { GenerationService } from "./generation-service.js";
 export { QueueService } from "./queue-service.js";
@@ -118,6 +122,19 @@ export {
   type PlanValidationSummary,
 } from "./plan-validation.js";
 export type {
+  PlannerCastInput,
+  PlannerDraft,
+  PlannerNotice,
+  PlannerOptionsInput,
+  PlannerOutcome,
+  PlannerProviderCandidate,
+  PlannerRun,
+  PlannerStoryInput,
+  PlannerWorldInput,
+  PlannedScenePlan,
+  PlannedSpec,
+} from "./planner/types.js";
+export type {
   AddGenerationSpecCommand,
   AddScenePlanCommand,
   CreateBriefCommand,
@@ -126,6 +143,7 @@ export type {
   CreateVisualDnaCommand,
   CreateWorldCommand,
   PlanLifecycleCommand,
+  PlanProductionCommand,
   PlanVersionTarget,
   SetPlanCastCommand,
   SetPlanStoryCommand,
@@ -140,6 +158,7 @@ export type {
   PlanDetail,
   PlanExecutabilityView,
   PlanListItem,
+  PlanPlannerView,
   PlanningCounts,
   PlanningNextAction,
   PlanScenePlanRow,

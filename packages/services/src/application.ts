@@ -13,6 +13,7 @@ import { GenerationService } from "./generation-service.js";
 import { QueueService } from "./queue-service.js";
 import { ReviewService } from "./review-service.js";
 import { ProductionService } from "./production-service.js";
+import { PlannerService } from "./planner-service.js";
 import {
   CreativeBriefService,
   PlanningDefinitionService,
@@ -54,6 +55,8 @@ export interface FlowForgeApplication {
   readonly plans: ProductionPlanService;
   readonly planValidation: PlanningValidationService;
   readonly planReads: PlanningReadService;
+  /** The deterministic planner: authors plan versions from a brief through the planning services. */
+  readonly planner: PlannerService;
 }
 
 /**
@@ -93,6 +96,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
   const definitions = new PlanningDefinitionService(deps);
   const plans = new ProductionPlanService(deps, planReads);
   const planValidation = new PlanningValidationService(deps, planReads);
+  const planner = new PlannerService(deps, planReads, plans, planValidation);
   return {
     repository,
     providers,
@@ -107,6 +111,7 @@ export function createApplication(repository: JobRepository, options: Applicatio
     plans,
     planValidation,
     planReads,
+    planner,
   };
 }
 
