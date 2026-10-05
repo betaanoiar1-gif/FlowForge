@@ -154,8 +154,12 @@ Global flags select the durable wiring, not the intent: `--data-dir`, `--provide
 `--json`. `--provider` doubles as the request provider for `generate` and as the served provider for
 `queue run`, which is exactly what the coverage guard compares against. A read, an enqueue, or a
 review command never attaches to the browser; only execution with `--provider google-flow` connects
-to the operator's CDP session, and a missing session fails as `PROVIDER_SESSION_UNAVAILABLE` with a
-redacted endpoint rather than being reported as provider failure.
+to the operator's CDP session. Two different operator actions are refused under two different codes
+rather than being collapsed: `GOOGLE_FLOW_NOT_CONFIGURED` when no endpoint was ever given (neither
+`--cdp-endpoint` nor `FLOWFORGE_CDP_ENDPOINT`, so this is a setup step) and `PROVIDER_SESSION_UNAVAILABLE`
+when an endpoint was configured but could not be attached (the browser is down or not yet authenticated).
+Both report a scheme-and-host endpoint only, never credentials or query data, and neither is reported as a
+provider failure — no job, attempt, or queue row changes because a session could not be opened.
 
 Typical first run:
 
@@ -257,3 +261,35 @@ flowforge plan executions --plan-id PLAN [--version N]                       # e
 it enqueued. Exit codes follow the conventions in §7: `0` success, `1` error, `2` usage, `3` when durable state
 legitimately blocks the command (including a blocked `--dry-run`). The readiness gate, the execution fingerprint,
 the idempotency and recovery contract, and the test map are [docs/plan-execution.md](./plan-execution.md).
+
+## 14. Phase 6 continuation — a real provider without a service change
+
+Phase 6 hardened `providers/google-flow` behind the boundary this document already describes, and the
+service layer is where that shows up as *absence* of change:
+
+- **The registry stays a capability registry.** `createApplication({ providers: [...] })` accepts
+  descriptors (`{ id, capabilities }`) and nothing else, so `GoogleFlowProvider` and `MockGenerationProvider`
+  resolve from the same map, and resolving a descriptor constructs no provider, opens no browser, and reads
+  no environment variable. Admission — `PROVIDER_NOT_CONFIGURED`, `PROVIDER_UNSUPPORTED_REQUEST` with the
+  unmet capability named in `details` — still happens in `GenerationService.assertProviderAccepts`, before
+  the repository write, so a request Flow cannot serve never becomes a job or a queue item.
+- **No Google-specific service, queue, worker, retry engine, or asset store exists.** `QueueService`,
+  `GenerationService`, `ReviewService`, and `ProductionService` were not modified to accommodate Flow, and
+  no service in `packages/services` imports the browser package. The provider instance is constructed only
+  by the composition root in `apps/cli/src/runtime.ts`, which hands it to the existing `LocalQueueWorker`.
+- **Provider failures stay provider-side classifications.** The adapter reports `GenerationProviderError`
+  codes (`docs/google-flow-provider.md` holds the table and the recovery rules); the services translate
+  nothing, and the queue keeps its Phase 1 decision set — `UNCERTAIN_PROVIDER_STATE` defers the same attempt,
+  a retryable non-uncertain failure takes the existing retry path, and an exhausted or non-retryable failure
+  terminates the attempt where the durable guard can still see why.
+- **Configuration states are distinguishable at the operator boundary:** `GOOGLE_FLOW_NOT_CONFIGURED` versus
+  `PROVIDER_SESSION_UNAVAILABLE` (see §8), both with a redacted endpoint and neither mutating durable state.
+- **Handoff stays provider-neutral.** A Flow result arrives as one `ProviderArtifact` and becomes an asset
+  version, a QC result, and a review item through the same calls a Mock result uses, with `providerRequestKey`
+  and the local `providerJobId` recorded in asset metadata for traceability. Nothing in the review or QC
+  path knows or needs to know that a browser was involved.
+
+Evidence lives in `providers/google-flow/test/real-provider-integration.test.mjs`, which drives the real
+repository, queue, worker, asset store, and QC against a fake gateway, and in
+`apps/cli/test/flow-runtime.test.mjs` for the composition root. Both are deterministic and credential-free:
+they pass with no Chrome, no Google session, and no network. Live Google Flow remains **NOT RUN**.

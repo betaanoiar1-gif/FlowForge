@@ -26,6 +26,8 @@ export const APPLICATION_ERROR_CODES = Object.freeze({
   WORKER_NOT_CONFIGURED: "WORKER_NOT_CONFIGURED",
   /** A live provider session could not be attached (for example no browser on the CDP endpoint). */
   PROVIDER_SESSION_UNAVAILABLE: "PROVIDER_SESSION_UNAVAILABLE",
+  /** A browser-backed provider was selected but no browser session was ever configured for it. */
+  GOOGLE_FLOW_NOT_CONFIGURED: "GOOGLE_FLOW_NOT_CONFIGURED",
   /** The scene does not satisfy every derived production-readiness condition. */
   READINESS_NOT_SATISFIED: "READINESS_NOT_SATISFIED",
   /** Work is still queued or running, so the archive command was refused. */

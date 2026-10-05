@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { GenerationProviderError } from "@flowforge/core";
 import type {
@@ -20,6 +20,7 @@ export type GoogleFlowSessionStatus =
   | "AUTH_REQUIRED"
   | "BLOCKED"
   | "BUSY"
+  | "PAGE_NOT_READY"
   | "READY"
   | "UI_CHANGED";
 
@@ -42,21 +43,87 @@ export const GOOGLE_FLOW_ERROR_CODES = Object.freeze({
   BROWSER_UNAVAILABLE: "FLOW_BROWSER_UNAVAILABLE",
   RECOVERY_STORAGE_UNAVAILABLE: "FLOW_RECOVERY_STORAGE_UNAVAILABLE",
   SESSION_NOT_READY: "FLOW_SESSION_NOT_READY",
+  PAGE_NOT_READY: "FLOW_PAGE_NOT_READY",
+  EDITOR_NOT_FOUND: "FLOW_EDITOR_NOT_FOUND",
+  PROMPT_INPUT_NOT_FOUND: "FLOW_PROMPT_INPUT_NOT_FOUND",
+  GENERATE_CONTROL_NOT_FOUND: "FLOW_GENERATE_CONTROL_NOT_FOUND",
+  PROMPT_NOT_VISIBLE: "FLOW_PROMPT_NOT_VISIBLE",
   TIMEOUT: "FLOW_TIMEOUT",
   AUTH_REQUIRED: "FLOW_AUTH_REQUIRED",
   ACCESS_BLOCKED: "FLOW_ACCESS_BLOCKED",
   UI_CHANGED: "FLOW_UI_CHANGED",
   UNSUPPORTED_REQUEST: "FLOW_UNSUPPORTED_REQUEST",
   PROMPT_FILL_FAILED: "FLOW_PROMPT_FILL_FAILED",
+  SUBMISSION_FAILED: "FLOW_SUBMISSION_FAILED",
   SUBMISSION_UNKNOWN: "FLOW_SUBMISSION_UNKNOWN",
   CORRELATION_AMBIGUOUS: "FLOW_CORRELATION_AMBIGUOUS",
   GENERATION_FAILED: "FLOW_GENERATION_FAILED",
   RESULT_NOT_READY: "FLOW_RESULT_NOT_READY",
   DOWNLOAD_FAILED: "FLOW_DOWNLOAD_FAILED",
   DOWNLOAD_TIMEOUT: "FLOW_DOWNLOAD_TIMEOUT",
+  INVALID_ARTIFACT: "FLOW_INVALID_ARTIFACT",
   GENERATION_NOT_FOUND: "FLOW_GENERATION_NOT_FOUND",
   CANCEL_UNAVAILABLE: "FLOW_CANCEL_UNAVAILABLE",
 } as const);
+
+/**
+ * Recovery-neutral names the operator documentation uses for the same decisions, so no second
+ * vocabulary is introduced inside the adapter. `FLOW_TIMEOUT` is the generation timeout, and a
+ * correlated-but-missing result is reported as `FLOW_RESULT_NOT_READY` while an uncorrelated one
+ * is `FLOW_CORRELATION_AMBIGUOUS`; a provider job ID with no local record is `FLOW_GENERATION_NOT_FOUND`.
+ */
+export const GOOGLE_FLOW_ERROR_CODE_ALIASES = Object.freeze({
+  GOOGLE_FLOW_NOT_CONFIGURED: "raised by the composition root, not the adapter: no browser session was configured",
+  AUTH_REQUIRED: GOOGLE_FLOW_ERROR_CODES.AUTH_REQUIRED,
+  PAGE_NOT_READY: GOOGLE_FLOW_ERROR_CODES.PAGE_NOT_READY,
+  EDITOR_NOT_FOUND: GOOGLE_FLOW_ERROR_CODES.EDITOR_NOT_FOUND,
+  PROMPT_INPUT_NOT_FOUND: GOOGLE_FLOW_ERROR_CODES.PROMPT_INPUT_NOT_FOUND,
+  GENERATE_CONTROL_NOT_FOUND: GOOGLE_FLOW_ERROR_CODES.GENERATE_CONTROL_NOT_FOUND,
+  PROMPT_MISMATCH: GOOGLE_FLOW_ERROR_CODES.PROMPT_NOT_VISIBLE,
+  BUSY: "session status BUSY",
+  SUBMISSION_ACCEPTED: "attempt phase SUBMISSION_ACCEPTED",
+  RESULT_DETECTED: "attempt phase RESULT_DETECTED",
+  AMBIGUOUS_RESULT: GOOGLE_FLOW_ERROR_CODES.CORRELATION_AMBIGUOUS,
+  SUBMISSION_FAILED: GOOGLE_FLOW_ERROR_CODES.SUBMISSION_FAILED,
+  GENERATION_TIMEOUT: GOOGLE_FLOW_ERROR_CODES.TIMEOUT,
+  RESULT_NOT_FOUND: GOOGLE_FLOW_ERROR_CODES.GENERATION_NOT_FOUND,
+  DOWNLOAD_FAILED: GOOGLE_FLOW_ERROR_CODES.DOWNLOAD_FAILED,
+  INVALID_ARTIFACT: GOOGLE_FLOW_ERROR_CODES.INVALID_ARTIFACT,
+} as const);
+
+/** Where a failure was observed, which is what makes the retry decision provable. */
+export type GoogleFlowFailureStage = "PRE_SUBMIT" | "POST_SUBMIT";
+
+/**
+ * Read-only projection of the local recovery record. These are the two positive states the
+ * operator needs between "nothing was sent" and "a result exists", derived from the single
+ * persisted manifest state machine rather than stored as a second copy of the truth.
+ */
+export type GoogleFlowAttemptPhase =
+  | "NOT_SUBMITTED"
+  | "PREPARED"
+  | "SUBMITTING"
+  | "SUBMISSION_ACCEPTED"
+  | "RESULT_DETECTED"
+  | "RESULT_STORED"
+  | "FAILED"
+  | "CANCELLED";
+
+export interface GoogleFlowAttemptState {
+  provider: "google-flow";
+  providerRequestKey: string;
+  providerJobId: string;
+  phase: GoogleFlowAttemptPhase;
+  manifestState: ManifestState;
+  attemptNumber: number;
+  /** True only when the browser confirmed that the Generate dispatch completed. */
+  dispatchConfirmed: boolean;
+  correlationMethod?: CorrelationMethod;
+  hasCorrelatedMedia: boolean;
+  hasDownloadedArtifact: boolean;
+  updatedAt: string;
+}
+
 
 type GoogleFlowErrorCode = (typeof GOOGLE_FLOW_ERROR_CODES)[keyof typeof GOOGLE_FLOW_ERROR_CODES];
 type ManifestState = "PREPARED" | "SUBMITTING" | "NOT_SUBMITTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
@@ -338,7 +405,7 @@ export class GoogleFlowProvider implements ProviderAdapter {
     }
 
     const context = await this.inspectFlowContext();
-    if (context.inspection.status !== "READY" || !context.observation) throw sessionError(context.inspection);
+    if (context.inspection.status !== "READY" || !context.observation) throw sessionError(context.inspection, "PRE_SUBMIT");
     if (context.mode !== "image") {
       throw providerError(
         GOOGLE_FLOW_ERROR_CODES.UNSUPPORTED_REQUEST,
@@ -449,6 +516,41 @@ export class GoogleFlowProvider implements ProviderAdapter {
       );
     }
 
+    // Prompt integrity is re-checked immediately before submission, because the supplied prompt is
+    // authoritative and the editor's own contents are deliberately not exposed by the gateway. The
+    // only safe evidence available is the page's visible text, so the adapter requires exactly one
+    // new occurrence of that prompt and otherwise fails closed instead of clicking Generate.
+    let echoed: PageObservation;
+    try {
+      echoed = await this.browser.observe();
+    } catch {
+      await this.updateManifest(manifest, { state: "NOT_SUBMITTED" });
+      throw providerError(
+        GOOGLE_FLOW_ERROR_CODES.BROWSER_UNAVAILABLE,
+        "The Flow page could not be re-read after the prompt was entered; no Generate click was sent.",
+        true,
+        false,
+      );
+    }
+    if (countOccurrences(echoed.visibleText, request.prompt) !== manifest.baseline.promptOccurrences + 1) {
+      await this.updateManifest(manifest, { state: "NOT_SUBMITTED" });
+      throw providerError(
+        GOOGLE_FLOW_ERROR_CODES.PROMPT_NOT_VISIBLE,
+        "The prompt supplied for this attempt is not visibly present in the Flow editor exactly once, so it could not be verified; no Generate click was sent.",
+        false,
+        false,
+      );
+    }
+    if (manifest.baseline.sessionId !== undefined && this.browser.sessionId !== manifest.baseline.sessionId) {
+      await this.updateManifest(manifest, { state: "NOT_SUBMITTED" });
+      throw providerError(
+        GOOGLE_FLOW_ERROR_CODES.PROMPT_NOT_VISIBLE,
+        "The attached browser session changed while the prompt was being verified; the verified page state no longer applies and no Generate click was sent.",
+        true,
+        false,
+      );
+    }
+
     let generateTarget: Awaited<ReturnType<BrowserGateway["resolve"]>>;
     try {
       generateTarget = await this.browser.resolve(GENERATE_QUERY);
@@ -459,9 +561,9 @@ export class GoogleFlowProvider implements ProviderAdapter {
     if (!generateTarget.matched) {
       await this.updateManifest(manifest, { state: "NOT_SUBMITTED" });
       throw providerError(
-        GOOGLE_FLOW_ERROR_CODES.UI_CHANGED,
+        GOOGLE_FLOW_ERROR_CODES.GENERATE_CONTROL_NOT_FOUND,
         "The enabled Generate control was not unique after prompt verification; no click was sent.",
-        true,
+        false,
         false,
       );
     }
@@ -479,9 +581,11 @@ export class GoogleFlowProvider implements ProviderAdapter {
       );
     }
     if (!click.matched) {
+      // The browser never located the control at dispatch time, so the absence of a submission is
+      // proven rather than assumed: the attempt may be retried under the existing queue semantics.
       await this.updateManifest(manifest, { state: "NOT_SUBMITTED" });
       throw providerError(
-        GOOGLE_FLOW_ERROR_CODES.UI_CHANGED,
+        GOOGLE_FLOW_ERROR_CODES.SUBMISSION_FAILED,
         "The Generate control ceased to be unique before dispatch; no click was sent.",
         true,
         false,
@@ -569,8 +673,13 @@ export class GoogleFlowProvider implements ProviderAdapter {
 
     const refreshed = await this.readManifestByProviderJobId(providerJobId);
     if (!refreshed) throw providerError(GOOGLE_FLOW_ERROR_CODES.SUBMISSION_UNKNOWN, "Flow recovery state disappeared during download.", true, true);
-    if (refreshed.resultPath && await isNonEmptyFile(refreshed.resultPath)) {
-      return [this.toArtifact(refreshed)];
+    // A previously downloaded file is reused only while it is still a usable image; otherwise it is
+    // re-downloaded from the same correlated result instead of being regenerated.
+    if (refreshed.resultPath) {
+      const usable = (await isNonEmptyFile(refreshed.resultPath)) &&
+        (await artifactMimeType(refreshed.fileName ?? "", refreshed.resultPath)) !== undefined;
+      if (usable) return [await this.toArtifact(refreshed)];
+      await this.updateManifest(refreshed, { resultPath: undefined, fileName: undefined });
     }
     assertRequestMatchesManifest(refreshed, refreshed.providerRequestKey, request);
     const mediaTarget = await this.verifyVisibleResultCorrelation(refreshed, request!);
@@ -632,12 +741,25 @@ export class GoogleFlowProvider implements ProviderAdapter {
       if (!isPathInside(this.rootDir, resolvedPath) || !(await isNonEmptyFile(resolvedPath))) {
         throw new Error("Browser download did not produce a non-empty file in the provider data directory.");
       }
+      const fileName = safeFileName(downloaded.fileName);
+      const mimeType = await artifactMimeType(fileName, resolvedPath);
+      if (!mimeType) {
+        // The bytes are not an image this pipeline can describe. The record keeps no result path, so
+        // recovery re-downloads the same correlated result; a generation is never repeated for it.
+        throw providerError(
+          GOOGLE_FLOW_ERROR_CODES.INVALID_ARTIFACT,
+          "The downloaded Flow result is not a readable supported image; no asset was imported and no new generation was submitted.",
+          true,
+          true,
+        );
+      }
       const stored = await this.updateManifest(refreshed, {
         resultPath: resolvedPath,
-        fileName: safeFileName(downloaded.fileName),
+        fileName,
       });
-      return [this.toArtifact(stored)];
+      return [await this.toArtifact(stored)];
     } catch (error) {
+      if (error instanceof GenerationProviderError) throw error;
       const timedOut = error instanceof BrowserGatewayError && error.timedOut;
       throw providerError(
         timedOut ? GOOGLE_FLOW_ERROR_CODES.DOWNLOAD_TIMEOUT : GOOGLE_FLOW_ERROR_CODES.DOWNLOAD_FAILED,
@@ -712,6 +834,17 @@ export class GoogleFlowProvider implements ProviderAdapter {
     const busy = BUSY_TEXT.test(text);
     if (busy) return { inspection: { ...inspectionBase, status: "BUSY", reasonCode: "VISIBLE_GENERATION_ACTIVITY" }, observation };
 
+    // A still-loading Flow SPA is a different operational decision from a changed UI: waiting may
+    // legitimately help, while a missing control means a human must look at the page. Only the
+    // browser's own enumeration is used, and it is reduced to a safe token before it is reported.
+    if (observation.readyState !== "complete") {
+      const token = typeof observation.readyState === "string" ? observation.readyState.toUpperCase().replace(/[^A-Z0-9_]/g, "_") : "UNKNOWN";
+      return {
+        inspection: { ...inspectionBase, status: "PAGE_NOT_READY", reasonCode: `DOCUMENT_READY_STATE_${token || "UNKNOWN"}` },
+        observation,
+      };
+    }
+
     try {
       const [prompt, generate] = await Promise.all([
         this.browser.resolve(PROMPT_QUERY),
@@ -721,10 +854,14 @@ export class GoogleFlowProvider implements ProviderAdapter {
       if (prompt.matched && generate.matched && mode) {
         return { inspection: { ...inspectionBase, status: "READY" }, observation, mode };
       }
+      return {
+        inspection: { ...inspectionBase, status: "UI_CHANGED", reasonCode: missingControlReason(prompt.matched, generate.matched, mode) },
+        observation,
+      };
     } catch {
       // A changed or inaccessible UI is never treated as ready.
+      return { inspection: { ...inspectionBase, status: "UI_CHANGED", reasonCode: "CONTROL_RESOLUTION_FAILED" }, observation };
     }
-    return { inspection: { ...inspectionBase, status: "UI_CHANGED", reasonCode: "EXPECTED_VISIBLE_CONTROLS_NOT_UNIQUE" }, observation };
   }
 
   private contextResult(status: GoogleFlowSessionStatus, reasonCode: string, browserState = "UNKNOWN"): FlowContext {
@@ -754,7 +891,7 @@ export class GoogleFlowProvider implements ProviderAdapter {
       throw providerError(GOOGLE_FLOW_ERROR_CODES.UI_CHANGED, "The Flow UI changed while a generation was pending; the same attempt is retained without resubmission.", true, true);
     }
     if (!context.observation || !isReadyOrBusy(context.inspection.status)) {
-      throw providerError(GOOGLE_FLOW_ERROR_CODES.SUBMISSION_UNKNOWN, "The authorized Flow page is unavailable or changed; the prior submission is retained without resubmission.", true, true);
+      throw sessionError(context.inspection, "POST_SUBMIT");
     }
     if (manifest.baseline.sessionId && context.inspection.sessionId !== manifest.baseline.sessionId) {
       throw providerError(GOOGLE_FLOW_ERROR_CODES.SUBMISSION_UNKNOWN, "The attached browser session differs from the one that started this attempt; result correlation stopped.", true, true);
@@ -786,6 +923,16 @@ export class GoogleFlowProvider implements ProviderAdapter {
       };
     }
 
+    if (!manifest.dispatchConfirmed) {
+      // The Generate dispatch was never confirmed, so the missing evidence says more about the
+      // submission than about a result: report that uncertainty instead of blaming the page.
+      throw providerError(
+        GOOGLE_FLOW_ERROR_CODES.SUBMISSION_UNKNOWN,
+        "It was never confirmed that this attempt's Generate action was dispatched, and the visible Flow page shows no correlated result; the same attempt is retained.",
+        true,
+        true,
+      );
+    }
     throw providerError(
       GOOGLE_FLOW_ERROR_CODES.CORRELATION_AMBIGUOUS,
       "The visible Flow page does not show exactly one new generation correlated to this attempt; no result was accepted or downloaded.",
@@ -800,7 +947,7 @@ export class GoogleFlowProvider implements ProviderAdapter {
   ): Promise<SemanticQuery> {
     const context = await this.inspectFlowContext();
     if (!context.observation || !isReadyOrBusy(context.inspection.status)) {
-      throw providerError(GOOGLE_FLOW_ERROR_CODES.CORRELATION_AMBIGUOUS, "The Flow page is unavailable; the downloaded result could not be correlated.", true, true);
+      throw sessionError(context.inspection, "POST_SUBMIT");
     }
     if (manifest.baseline.sessionId && context.inspection.sessionId !== manifest.baseline.sessionId) {
       throw providerError(GOOGLE_FLOW_ERROR_CODES.CORRELATION_AMBIGUOUS, "The active browser session differs from the one that produced this result.", true, true);
@@ -943,16 +1090,69 @@ export class GoogleFlowProvider implements ProviderAdapter {
     return updated;
   }
 
-  private toArtifact(manifest: FlowManifest): ProviderArtifact {
+  private async toArtifact(manifest: FlowManifest): Promise<ProviderArtifact> {
     if (!manifest.resultPath || !manifest.fileName) {
       throw providerError(GOOGLE_FLOW_ERROR_CODES.DOWNLOAD_FAILED, "The correlated Flow result has not been downloaded yet.", true, true);
+    }
+    const mimeType = await artifactMimeType(manifest.fileName, manifest.resultPath);
+    if (!mimeType) {
+      throw providerError(
+        GOOGLE_FLOW_ERROR_CODES.INVALID_ARTIFACT,
+        "The stored Flow result is no longer a readable supported image; no asset was imported and no new generation was submitted.",
+        true,
+        true,
+      );
     }
     return {
       sourcePath: manifest.resultPath,
       fileName: manifest.fileName,
       outputIndex: 0,
-      mimeType: imageMimeType(manifest.fileName),
+      mimeType,
     };
+  }
+
+  /**
+   * Read-only, sanitized view of the local recovery record for an attempt. It exists so an operator or
+   * a test can tell "a Generate action was accepted" apart from "a result is correlated" without reading
+   * the manifest file or reconstructing the state machine; it stores nothing new.
+   */
+  async attemptState(providerRequestKey: string): Promise<GoogleFlowAttemptState | null> {
+    const manifest = await this.readManifestByRequestKey(providerRequestKey);
+    if (!manifest) return null;
+    return {
+      provider: this.id as "google-flow",
+      providerRequestKey: manifest.providerRequestKey,
+      providerJobId: manifest.providerJobId,
+      phase: attemptPhaseFor(manifest),
+      manifestState: manifest.state,
+      attemptNumber: manifest.attemptNumber,
+      dispatchConfirmed: manifest.dispatchConfirmed,
+      ...(manifest.correlationMethod === undefined ? {} : { correlationMethod: manifest.correlationMethod }),
+      hasCorrelatedMedia: Boolean(manifest.correlationMediaSignature),
+      hasDownloadedArtifact: Boolean(manifest.resultPath && manifest.fileName),
+      updatedAt: manifest.updatedAt,
+    };
+  }
+}
+
+/** Derived from the single persisted manifest state machine; never a second source of truth. */
+function attemptPhaseFor(manifest: FlowManifest): GoogleFlowAttemptPhase {
+  switch (manifest.state) {
+    case "NOT_SUBMITTED":
+      return "NOT_SUBMITTED";
+    case "PREPARED":
+      return "PREPARED";
+    case "SUBMITTING":
+      return "SUBMITTING";
+    case "SUCCEEDED":
+      if (manifest.resultPath && manifest.fileName) return "RESULT_STORED";
+      return manifest.correlationMethod ? "RESULT_DETECTED" : "SUBMISSION_ACCEPTED";
+    case "FAILED":
+      return "FAILED";
+    case "CANCELLED":
+      return "CANCELLED";
+    case "RUNNING":
+      return manifest.dispatchConfirmed ? "SUBMISSION_ACCEPTED" : "SUBMITTING";
   }
 }
 
@@ -993,26 +1193,114 @@ function providerError(
   return new GenerationProviderError({ message, code, retryable, submissionUnknown });
 }
 
-function sessionError(inspection: GoogleFlowSessionInspection): GenerationProviderError {
+/**
+ * Distinguishes the states an operator must act on differently. The gateway can only prove whether
+ * each semantic target resolved uniquely, so the reason is derived from that evidence alone and is
+ * never a guess about Flow's internal structure.
+ */
+function missingControlReason(
+  promptMatched: boolean,
+  generateMatched: boolean,
+  mode: "image" | "video" | undefined,
+): string {
+  if (!promptMatched && !generateMatched && !mode) return "EDITOR_NOT_FOUND";
+  if (!promptMatched) return "PROMPT_INPUT_NOT_FOUND";
+  if (!generateMatched) return "GENERATE_CONTROL_NOT_FOUND";
+  return "EXPECTED_VISIBLE_CONTROLS_NOT_UNIQUE";
+}
+
+function sessionError(
+  inspection: GoogleFlowSessionInspection,
+  stage: GoogleFlowFailureStage = "PRE_SUBMIT",
+): GenerationProviderError {
+  // Nothing can have reached the remote side before the first click, so only a post-click failure
+  // is allowed to claim that a submission may exist; that flag is what makes same-attempt recovery
+  // versus a new attempt provable for the durable queue.
+  const submissionUnknown = stage === "POST_SUBMIT";
+  const action = submissionUnknown
+    ? "the same attempt is retained and will be observed again without resubmitting"
+    : "no submission was attempted";
+  if (inspection.status === "PAGE_NOT_READY") {
+    return providerError(
+      GOOGLE_FLOW_ERROR_CODES.PAGE_NOT_READY,
+      `The Flow page is still loading; the adapter waited instead of acting against an incomplete page (${action}).`,
+      true,
+      submissionUnknown,
+    );
+  }
   if (inspection.status === "UI_CHANGED") {
+    if (inspection.reasonCode === "EDITOR_NOT_FOUND") {
+      return providerError(
+        GOOGLE_FLOW_ERROR_CODES.EDITOR_NOT_FOUND,
+        `The Google Flow editor is not present on the visible page and a person must inspect it (${action}).`,
+        false,
+        submissionUnknown,
+      );
+    }
+    if (inspection.reasonCode === "PROMPT_INPUT_NOT_FOUND") {
+      return providerError(
+        GOOGLE_FLOW_ERROR_CODES.PROMPT_INPUT_NOT_FOUND,
+        `A unique visible prompt editor was not found, so the prompt could not be verified (${action}).`,
+        false,
+        submissionUnknown,
+      );
+    }
+    if (inspection.reasonCode === "GENERATE_CONTROL_NOT_FOUND") {
+      return providerError(
+        GOOGLE_FLOW_ERROR_CODES.GENERATE_CONTROL_NOT_FOUND,
+        `The Flow prompt editor is visible but no unique Generate control was found (${action}).`,
+        false,
+        submissionUnknown,
+      );
+    }
     return providerError(
       GOOGLE_FLOW_ERROR_CODES.UI_CHANGED,
-      "The visible Google Flow controls or selected mode no longer match the tested workflow; no submission was attempted.",
-      true,
-      true,
+      `The visible Google Flow controls or selected mode no longer match the tested workflow (${action}).`,
+      submissionUnknown,
+      submissionUnknown,
     );
   }
   if (inspection.status === "AUTH_REQUIRED") {
-    return providerError(GOOGLE_FLOW_ERROR_CODES.AUTH_REQUIRED, "Sign in to Google Flow manually in the attached browser, then resume the same job attempt.", true, true);
+    return providerError(
+      GOOGLE_FLOW_ERROR_CODES.AUTH_REQUIRED,
+      submissionUnknown
+        ? "Google authentication is required in the visible browser; authenticate manually and resume the same attempt."
+        : "Sign in to Google Flow manually in the attached browser; the job is not submitted and not retried automatically.",
+      false,
+      submissionUnknown,
+    );
   }
   if (inspection.status === "BLOCKED") {
-    return providerError(GOOGLE_FLOW_ERROR_CODES.ACCESS_BLOCKED, "Google Flow is showing an access/security challenge; stop and resolve it manually.", false, true);
+    return providerError(
+      GOOGLE_FLOW_ERROR_CODES.ACCESS_BLOCKED,
+      `Google Flow is showing an access/security challenge; stop and resolve it manually (${action}).`,
+      false,
+      submissionUnknown,
+    );
+  }
+  if (inspection.status === "DISCONNECTED" || inspection.status === "NO_PAGE") {
+    return providerError(
+      GOOGLE_FLOW_ERROR_CODES.BROWSER_UNAVAILABLE,
+      inspection.status === "DISCONNECTED"
+        ? `No browser session is attached to the configured endpoint; attach the manually authenticated browser (${action}).`
+        : `The attached browser has no active page; open Google Flow in it and resume (${action}).`,
+      true,
+      submissionUnknown,
+    );
+  }
+  if (inspection.status === "BUSY") {
+    return providerError(
+      GOOGLE_FLOW_ERROR_CODES.SESSION_NOT_READY,
+      `Google Flow is visibly running another generation; this attempt waits and does not click Generate (${action}).`,
+      true,
+      submissionUnknown,
+    );
   }
   return providerError(
     GOOGLE_FLOW_ERROR_CODES.SESSION_NOT_READY,
-    `Google Flow session is not ready (${inspection.reasonCode ?? inspection.status}); no submission was attempted.`,
+    `Google Flow session is not ready (${inspection.reasonCode ?? inspection.status}; ${action}).`,
     true,
-    true,
+    submissionUnknown,
   );
 }
 
@@ -1140,6 +1428,43 @@ function imageMimeType(fileName: string): string | undefined {
     case ".gif": return "image/gif";
     case ".bmp": return "image/bmp";
     default: return undefined;
+  }
+}
+
+/**
+ * The type handed to the existing asset/QC path. The download name decides when it is trustworthy, and
+ * a nameless download is described by its own bytes; a result that can be described neither way is an
+ * invalid artifact rather than an asset, because the asset store and QC would receive opaque bytes.
+ * Content validation itself stays in the existing deterministic QC path and is not duplicated here.
+ */
+async function artifactMimeType(fileName: string, filePath: string): Promise<string | undefined> {
+  return imageMimeType(fileName) ?? (await sniffImageMimeType(filePath));
+}
+
+const IMAGE_SIGNATURES: readonly { readonly mimeType: string; readonly magic: string; readonly offset: number }[] = Object.freeze([
+  { mimeType: "image/png", magic: "\x89PNG\r\n\x1a\n", offset: 0 },
+  { mimeType: "image/jpeg", magic: "\xff\xd8\xff", offset: 0 },
+  { mimeType: "image/webp", magic: "RIFF", offset: 0 },
+  { mimeType: "image/gif", magic: "GIF8", offset: 0 },
+  { mimeType: "image/bmp", magic: "BM", offset: 0 },
+]);
+
+async function sniffImageMimeType(filePath: string): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await open(filePath, "r");
+    const buffer = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead < 4) return undefined;
+    const head = buffer.subarray(0, bytesRead).toString("latin1");
+    const signature = IMAGE_SIGNATURES.find((candidate) => head.startsWith(candidate.magic, candidate.offset));
+    // A RIFF container only identifies a WebP when the form type agrees, so this one is checked apart.
+    if (signature?.mimeType === "image/webp" && !head.startsWith("WEBP", 8)) return undefined;
+    return signature?.mimeType;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
   }
 }
 

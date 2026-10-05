@@ -4,7 +4,7 @@ FlowForge is an independent, provider-neutral creative-production system. Its pr
 
 ## Current status
 
-**Phases 1–3 are implemented, Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability — Phase 4B adds the deterministic planner engine that authors those plans, and Phase 4C adds an optional AI planner adapter that *proposes* input for that same engine. Phase 4A and 4B contain no model call at all. Phase 4C's adapter is propose-only: it may return a structured proposal, it writes nothing, and every field of the resulting plan is still decided by the deterministic rules and the Phase 4A validator. No agent loop and no autonomous submission exist anywhere in the planning route.** Phase 5 adds the one bridge from a plan to execution — `flowforge plan execute` *materializes* an `EXECUTABLE` version into durable scenes, scene versions, jobs, and queue items inside a single transaction, idempotently by a deterministic fingerprint — and then stops: the existing queue, worker, provider registry, QC, and review path do the executing, and a second call creates nothing.** Phase 2's browser-based Google Flow provider is implemented and fake-tested, but live Flow behavior is not validated. The Phase 1 path remains the deterministic local/CI route:
+**Phases 1–3 are implemented, Phase 4A adds the creative planning domain — durable creative briefs, versioned production plans with story, cast, worlds, Visual DNA, scene plans, and generation specs, deterministic validation, and capability-gated executability — Phase 4B adds the deterministic planner engine that authors those plans, and Phase 4C adds an optional AI planner adapter that *proposes* input for that same engine. Phase 4A and 4B contain no model call at all. Phase 4C's adapter is propose-only: it may return a structured proposal, it writes nothing, and every field of the resulting plan is still decided by the deterministic rules and the Phase 4A validator. No agent loop and no autonomous submission exist anywhere in the planning route.** Phase 5 adds the one bridge from a plan to execution — `flowforge plan execute` *materializes* an `EXECUTABLE` version into durable scenes, scene versions, jobs, and queue items inside a single transaction, idempotently by a deterministic fingerprint — and then stops: the existing queue, worker, provider registry, QC, and review path do the executing, and a second call creates nothing.** Phase 2's browser-based Google Flow provider is implemented and fake-tested; **Phase 6 hardened its execution boundary** — one `Generate` submission per attempt enforced by the durable recovery record, prompt verification that must succeed *before* the click, a distinguishable state/error taxonomy (`PAGE_NOT_READY` apart from a missing editor, prompt input, or Generate control), fail-closed correlation, artifact describability before handoff, and a recovery classification that defers the same attempt whenever a remote generation might already exist — all of it proven against a **fake `BrowserGateway`**, with no change to the engine, queue, worker, asset store, QC, or review path. Live Flow behavior is still not validated. The Phase 1 path remains the deterministic local/CI route:
 
 ```text
 Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
@@ -12,7 +12,7 @@ Project → versioned Scene → idempotent Generation Job → SQLite queue/lease
         → explicit Review → explicit selected version
 ```
 
-The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design. Phase 4B's planner is a pure function over explicit input — 12 named, versioned rules, canonical normalization, derived identifiers, and write-once provenance per version — so the same brief and story always produce the same plan; it writes through the same planning services a human uses, and no command executes a plan. Phase 4C puts a model in front of that engine and nothing behind it: `flowforge planner ai-run` asks a provider-neutral `AIPlanner` port, refuses any answer that is not a schema-valid proposal, resolves the proposal's names against the project, plans it with the 4B rules, validates it with 4A, and records which adapter, model, and digests produced the version — in additive v6 columns kept outside the plan's content hash. A live model call is never required to build, test, or verify FlowForge.
+The Phase 2 provider uses only visible UI interactions through the generic browser gateway. Its declared scope is one image at a time with no references or non-default settings. Ordinary tests require neither Chrome nor a Google account. **Live Google Flow testing is BLOCKED / NOT RUN** because no user-authorized CDP session was available, and Phase 6 deliberately stopped at the automated boundary: the next step is one manual generation on an authorized session, not an autonomous run. Do not interpret passing fake tests as live Flow verification. Phase 3 makes the durable engine operable without changing it: `packages/services` validates and orchestrates, and `apps/cli` exposes project, scene, generation, queue, review, selection, and production-readiness commands whose human and `--json` output come from the same read models. Phase 4A sits above that spine: plans are authored, validated, approved, and marked executable, and only then mapped onto the existing scene/version/job commands. Planning never enqueues work, and `plan preview` is read-only by design. Phase 4B's planner is a pure function over explicit input — 12 named, versioned rules, canonical normalization, derived identifiers, and write-once provenance per version — so the same brief and story always produce the same plan; it writes through the same planning services a human uses, and no command executes a plan. Phase 4C puts a model in front of that engine and nothing behind it: `flowforge planner ai-run` asks a provider-neutral `AIPlanner` port, refuses any answer that is not a schema-valid proposal, resolves the proposal's names against the project, plans it with the 4B rules, validates it with 4A, and records which adapter, model, and digests produced the version — in additive v6 columns kept outside the plan's content hash. A live model call is never required to build, test, or verify FlowForge.
 
 Executing a plan is documented in [docs/plan-execution.md](./docs/plan-execution.md) — the readiness gate, the execution fingerprint, the atomicity and idempotency contract, the v7 schema, and the recovery rules. See [ARCHITECTURE.md](./ARCHITECTURE.md) for package boundaries/recovery, [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) for delivery gates, [docs/vertical-slice.md](./docs/vertical-slice.md) for Phase 1 behavior, [docs/application-services.md](./docs/application-services.md) for the Phase 3 service boundaries and operator commands, [docs/planning-domain.md](./docs/planning-domain.md) for the Phase 4A planning model, lifecycle, validation catalogue, and CLI, [docs/planner-engine.md](./docs/planner-engine.md) for the Phase 4B planner contracts, rules, normalization, and determinism guarantees, [docs/ai-planning.md](./docs/ai-planning.md) for the Phase 4C AI planning boundary, port, proposal schema, provenance, and security rules, [docs/browser-gateway.md](./docs/browser-gateway.md), [docs/google-flow-provider.md](./docs/google-flow-provider.md), [FEATURE_MATRIX.md](./FEATURE_MATRIX.md), and [DECISIONS.md](./DECISIONS.md).
 
@@ -225,6 +225,49 @@ $CLI review select --scene-id <id> --asset-version-id <id>
 - **Provenance without secrets.** `plan_executions` plus the link columns on `scene_versions` and
   `generation_jobs` record which materialization produced which row; no credential, endpoint, prompt body, or
   provider response is stored anywhere on the execution path.
+
+## Running a real provider (Phase 6)
+
+The real path is the same pipeline with a different provider and a browser the operator owns and has signed
+into by hand. Queueing needs no browser; only execution attaches one, and the two configuration states are
+told apart on purpose — `GOOGLE_FLOW_NOT_CONFIGURED` when no endpoint was ever given, and
+`PROVIDER_SESSION_UNAVAILABLE` when an endpoint was given but nothing could be attached:
+
+```sh
+corepack pnpm --filter @flowforge/cli build
+CLI="node apps/cli/dist/index.js --data-dir /tmp/flowforge-pilot"
+$CLI provider list --provider google-flow          # what this build can actually claim
+$CLI generate --project-id pilot --scene-id scene-1 --provider google-flow \
+  --parameters-json '{"mode":"image","outputCount":1}'   # queueing never touches the browser
+$CLI queue run --provider google-flow --cdp-endpoint http://127.0.0.1:9222
+$CLI status --job-id <id>                            # attempt, providerJob, recoveries, next action
+```
+
+What that run guarantees, and what 50 fake-gateway tests assert in counters rather than message text:
+
+- **One side effect per attempt.** At most one Generate submission per `GenerationAttempt`; a repeated
+  submission for the same request key is answered from the durable recovery record, and a click whose dispatch
+  was never confirmed is resolved by observation, never by clicking again.
+- **The prompt is authoritative.** The guarded fill reads the editor back, and immediately before the click the
+  page must show exactly one new occurrence of that prompt in the same browser session. An unverifiable prompt
+  fails closed as `FLOW_PROMPT_NOT_VISIBLE` and the record stays `NOT_SUBMITTED`.
+- **Correlation is proven or the result is refused.** One new visible media element plus the prompt echo;
+  ambiguous, media-less, cross-session, or unreadable-record states never pick "the latest image", and no
+  download is attempted against them.
+- **Timeouts recover, they do not regenerate.** Poll timeout, transport interruption mid-poll, authentication
+  lost while a generation runs, and download failures all resume the *same* attempt; only a provably
+  unsubmitted failure takes another attempt under the existing queue semantics, and the existing storage guard
+  still refuses a blind resubmission of uncertain work.
+- **Artifacts are described before they are trusted.** The correlated bytes must be a describable supported
+  image, or the result is `FLOW_INVALID_ARTIFACT` and is re-downloaded rather than imported or regenerated.
+  Content judgement stays in the existing deterministic QC.
+- **Nothing sensitive is kept.** No cookies, tokens, auth headers, browser storage, page HTML, or prompt body in
+  provider records or output; the recovery record stores a prompt digest and visible-UI fingerprints, and
+  `attemptState()` reports the recovery phase without re-polling the page.
+
+**Live Google Flow validation is still manual and pending** — run one generation on Google Colab with the user
+before any autonomous or multi-unit run. The provider's boundary, states, and limits are documented in
+[docs/google-flow-provider.md](./docs/google-flow-provider.md).
 
 ## Browser diagnostics and live Flow smoke
 

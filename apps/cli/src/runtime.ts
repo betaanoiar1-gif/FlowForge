@@ -189,13 +189,29 @@ export async function openApplication(
       try {
         await gateway.connect();
       } catch (error) {
+        // The two cases need different operator actions, so they are not collapsed: an endpoint that
+        // was never configured is a setup step, while an unreachable one means the browser is down.
+        const reason = error instanceof Error ? error.message.split("\n")[0] ?? "unknown" : String(error);
+        if (globals.cdpEndpoint === undefined) {
+          throw new ApplicationError(
+            "GOOGLE_FLOW_NOT_CONFIGURED",
+            `No browser session is configured for Google Flow. Start your own authenticated browser with a local CDP port and pass --cdp-endpoint (or FLOWFORGE_CDP_ENDPOINT); FlowForge never logs in for you. Tried the default ${describeEndpoint(endpoint)}.`,
+            {
+              provider: descriptor.id,
+              endpoint: describeEndpoint(endpoint),
+              configured: false,
+              reason,
+            },
+          );
+        }
         throw new ApplicationError(
           "PROVIDER_SESSION_UNAVAILABLE",
           `Could not attach to the operator-owned browser session (${describeEndpoint(endpoint)}). Authenticate the browser and start the gateway first; FlowForge never logs in for you.`,
           {
             provider: descriptor.id,
             endpoint: describeEndpoint(endpoint),
-            reason: error instanceof Error ? error.message.split("\n")[0] : String(error),
+            configured: true,
+            reason,
           },
         );
       }
